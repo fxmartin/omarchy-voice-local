@@ -3,7 +3,9 @@
 Run with: python3 -m unittest discover -s tests
 """
 
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -212,7 +214,28 @@ class ShellGraceTests(unittest.TestCase):
 class DesktopActionTests(unittest.TestCase):
     """A second window needs the entry's own action; plain launch focuses."""
 
+    # Synthetic, so the result never depends on which browsers the machine
+    # running the suite happens to have installed.
+    CHROME_ENTRY = (
+        "[Desktop Entry]\nType=Application\nName=Google Chrome\nExec=google-chrome\n"
+        "Actions=new-window;new-private-window;\n"
+        "[Desktop Action new-window]\nName=New Window\nExec=google-chrome\n"
+        "[Desktop Action new-private-window]\nName=New Incognito Window\n"
+        "Exec=google-chrome --incognito\n"
+    )
+
     def setUp(self):
+        data = tempfile.TemporaryDirectory()
+        self.addCleanup(data.cleanup)
+        apps = Path(data.name, "home", "applications")
+        apps.mkdir(parents=True)
+        (apps / "google-chrome.desktop").write_text(self.CHROME_ENTRY)
+        env = mock.patch.dict(os.environ, {
+            "XDG_DATA_HOME": str(Path(data.name, "home")),
+            "XDG_DATA_DIRS": str(Path(data.name, "system")),
+        })
+        env.start()
+        self.addCleanup(env.stop)
         self.config = Config(dry_run=False)
         self.executor = Executor(self.config)
 
