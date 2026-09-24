@@ -1,0 +1,22 @@
+# CI image for this repo's GitLab pipeline: the platform's uv toolchain image
+# plus the runtime pieces an Omarchy desktop always has and the suite exercises.
+# Built on the CI host and pushed to its local registry proxy by hand, not by a
+# job, because the executor pulls only from that proxy. From a checkout:
+#
+#   ssh <ci-host> 'mkdir -p ~/ci-images/omarchy-voice-ci && cat > ~/ci-images/omarchy-voice-ci/Containerfile' < ci/Containerfile
+#   ssh <ci-host> 'cd ~/ci-images/omarchy-voice-ci && container build --arch arm64 \
+#     -t 127.0.0.1:5001/local/omarchy-voice-ci:1 -f Containerfile .'
+#   ssh <ci-host> 'container image push --scheme http 127.0.0.1:5001/local/omarchy-voice-ci:1'
+#   ssh <ci-host> 'curl -sI -H "Accept: application/vnd.oci.image.index.v1+json" \
+#     http://127.0.0.1:5001/v2/local/omarchy-voice-ci/manifests/1 | grep -i docker-content-digest'
+#
+# Pin that digest in .gitlab-ci.yml. Bump the tag whenever this recipe changes,
+# so a pinned digest never silently refers to new content.
+#
+# Why not stub instead: the key-name tests check real keysym lookups through
+# libxkbcommon, and the installer test runs the real bash scripts. A fake would
+# test the fake. Both are always installed on the machines this code targets.
+#
+# Base: ghcr.io/astral-sh/uv python3.12-alpine, pinned by digest.
+FROM ghcr.io/astral-sh/uv@sha256:1b0697fa66367beef4ddc59d1ac6fac9cd8ab6bc09bab9951e4e0e479786cf0f
+RUN apk add --no-cache bash git libxkbcommon

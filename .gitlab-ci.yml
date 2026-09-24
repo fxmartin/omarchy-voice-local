@@ -1,0 +1,85 @@
+# CI for the self-hosted GitLab this fork uses as its primary remote. It mirrors
+# .github/workflows/ci.yml job for job, under a stricter contract: arm64 Linux
+# job containers, running as root, with no route to the public internet.
+#
+# Every job uses one image, pinned by digest and pulled from the platform's
+# local registry proxy at 127.0.0.1:5001, the only registry the executor can
+# reach. It is uv + Python 3.12 on Alpine plus git, bash and libxkbcommon; see
+# ci/Containerfile for why and for how to rebuild it.
+#
+# Offline installs. The executor mounts a per-project uv cache volume at
+# /cache/uv (UV_CACHE_DIR). Everything the jobs install comes from there: the
+# locked packages, the setuptools build backend, and the managed CPython 3.11
+# and 3.14 interpreters for the version matrix (kept under /cache/uv/python).
+# After changing uv.lock or the matrix, re-warm it on the CI host before
+# pushing, or the jobs fail at install. From a clean checkout of the commit:
+#
+#   rsync -a --delete --exclude .git --exclude .venv ./ <ci-host>:ci-warm/omarchy-voice-local/
+#   ssh <ci-host> 'container run --rm \
+#     -v local-ci-cd-cache-uv-root-omarchy-voice-local:/cache/uv \
+#     -v "$HOME/ci-warm/omarchy-voice-local:/src:ro" \
+#     -e UV_CACHE_DIR=/cache/uv -e UV_PYTHON_INSTALL_DIR=/cache/uv/python \
+#     127.0.0.1:5001/local/omarchy-voice-ci@sha256:59d8a777ebc25ca6dd358a1cbb97746bc8f4a645851ef3f6e3d44e0bf7adfa93 \
+#     sh -c "cp -r /src /work && cd /work && uv python install 3.11 3.14 \
+#            && for v in 3.11 3.14; do uv sync --frozen --extra dev --python \$v; done \
+#            && uv build"'
+
+# MR pipelines and pushes to the default branch only, so one commit never gets
+# a duplicate branch pipeline and MR pipeline.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+variables:
+  # A cache miss must fail the job, not quietly reach for the network.
+  UV_OFFLINE: "1"
+  UV_PYTHON_DOWNLOADS: "never"
+
+default:
+  image: 127.0.0.1:5001/local/omarchy-voice-ci@sha256:59d8a777ebc25ca6dd358a1cbb97746bc8f4a645851ef3f6e3d44e0bf7adfa93
+
+stages:
+  - check
+  - test
+  - build
+
+.uv:
+  before_script:
+    # Set here, not under `variables:`, because UV_CACHE_DIR is injected by the
+    # executor into the container and is not a GitLab variable.
+    - export UV_PYTHON_INSTALL_DIR="$UV_CACHE_DIR/python"
+
+publication:
+  stage: check
+  variables:
+    # The scan walks every ancestral commit; a shallow clone would hide history.
+    GIT_DEPTH: "0"
+  script:
+    - python3 tools/check_public_files.py --history HEAD
+
+shell-syntax:
+  stage: check
+  script:
+    - bash -n install.sh uninstall.sh share/install-paths.sh .githooks/pre-commit .githooks/pre-push
+
+test:
+  extends: .uv
+  stage: test
+  parallel:
+    matrix:
+      - PYTHON: ["3.11", "3.14"]
+  script:
+    - uv sync --frozen --extra dev --python "$PYTHON"
+    - uv run --frozen python --version
+    - uv run --frozen python -m compileall -q src tests tools
+    - uv run --frozen python -m unittest discover -s tests -v
+
+build:
+  extends: .uv
+  stage: build
+  script:
+    - uv sync --frozen --extra dev
+    - uv build
+    - uv run --frozen omarchy-voice --help
+    - uv run --frozen omarchy-vision --help
