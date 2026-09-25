@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from omarchy_voice.config import Config
 from omarchy_voice.tools import (
-    RESTORE_BUBBLE, SEARCH_SCOPES, VISUAL_SCOPES, Executor, Result,
+    RESTORE_BUBBLE, SEARCH_SCOPES, VISUAL_SCOPES, USER_MANAGER, Executor, Result,
 )
 
 WINDOW = {
@@ -321,8 +321,7 @@ class VerifiedWebappTests(unittest.TestCase):
         with mock.patch('omarchy_voice.tools.subprocess.run', return_value=mock.Mock(stdout='google-chrome.desktop\n')), \
              mock.patch('omarchy_voice.tools.shutil.which', return_value='/usr/bin/google-chrome-stable'):
             self.assertEqual(ex._webapp_command('https://x.com/'),
-                             ['systemd-run', '--user', '--collect', '--quiet', '--service-type=exec',
-                              '--', 'google-chrome-stable', '--app=https://x.com/'])
+                             [*USER_MANAGER, 'google-chrome-stable', '--app=https://x.com/'])
 
     def test_other_default_browsers_keep_omarchy_launcher_outside_the_sandbox(self):
         # Omarchy's webapp launcher runs uwsm-app, whose scope keeps the caller's
@@ -334,8 +333,7 @@ class VerifiedWebappTests(unittest.TestCase):
             with self.subTest(default=default.strip()), \
                  mock.patch('omarchy_voice.tools.subprocess.run', return_value=mock.Mock(stdout=default)):
                 self.assertEqual(ex._webapp_command('https://x.com/'),
-                                 ['systemd-run', '--user', '--collect', '--quiet', '--service-type=exec',
-                                  '--', 'omarchy', 'launch', 'webapp', 'https://x.com/'])
+                                 [*USER_MANAGER, 'omarchy', 'launch', 'webapp', 'https://x.com/'])
 
     def test_research_window_has_an_address_bar(self):
         ex = Executor(Config())

@@ -363,13 +363,16 @@ def _pane_hint(kind: str, target: str, name: str) -> str:
     return ""  # a terminal has no distinguishing mark worth guessing at
 
 
-# Starts a command as a transient service of the desktop's user manager, outside
-# OMA's PrivateTmp and read-only namespace. A browser must see the normal /tmp to
-# find the running browser's singleton socket; started from inside, it opened a
-# second instance on the same profile, which crashed on the shared GPU cache.
-# Launchers that only create a systemd *scope* (uwsm-app, so `omarchy launch
-# webapp`) do not escape: a scope keeps the caller's namespace.
-USER_MANAGER = ["systemd-run", "--user", "--collect", "--quiet", "--service-type=exec", "--"]
+# Every app the assistant opens is started as a transient service of the
+# desktop's user manager, outside OMA's PrivateTmp and read-only namespace. The
+# daemon stays sandboxed; what it opens for the user belongs in their session.
+# Launchers that only create a systemd *scope* (uwsm-app, and so `omarchy launch
+# webapp`) do not escape: a scope keeps the caller's namespace. A Chromium
+# started that way missed the running browser's singleton socket in /tmp, opened
+# a second instance on the same profile, and crashed on the shared GPU cache.
+# --pipe --wait keep the launcher's output and exit status, so a failed launch
+# is still reported as one.
+USER_MANAGER = ["systemd-run", "--user", "--quiet", "--collect", "--pipe", "--wait", "--"]
 
 
 def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
@@ -383,7 +386,7 @@ def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
     if kind == "web":
         if urlparse(target).scheme.lower() not in ("http", "https"):
             return None
-        return [*USER_MANAGER, "omarchy", "launch", "webapp", target]
+        return ["omarchy", "launch", "webapp", target]
     if kind == "terminal":
         return ["omarchy", "launch", "terminal", *shlex.split(target)] if target \
             else ["omarchy", "launch", "terminal"]
@@ -1593,6 +1596,10 @@ class Executor:
             return Result(True, out[:limit] + f"\n… [truncated at {limit} characters]")
         return Result(True, out)
 
+    def _launch(self, argv: list[str], timeout: float = 20.0) -> Result:
+        """Start an application in the desktop session. See USER_MANAGER."""
+        return self._shell([*USER_MANAGER, *argv], timeout=timeout, grace=LAUNCH_GRACE)
+
     # -- tools --------------------------------------------------------------
     def _tool_hypr_query(self, kind: str) -> Result:
         if kind not in QUERY_KINDS:
@@ -1802,8 +1809,9 @@ class Executor:
         # Only `omarchy launch ...` starts a foreground application; everything
         # else returns promptly and may have output worth reading, so it keeps
         # the full wait.
-        grace = LAUNCH_GRACE if argv[0] == "launch" else None
-        return self._shell(["omarchy", *argv], timeout=30, grace=grace)
+        if argv[0] == "launch":
+            return self._launch(["omarchy", *argv], timeout=30)
+        return self._shell(["omarchy", *argv], timeout=30)
 
     def _validate_launch_app(self, app: str, url: str = "") -> str | None:
         if url:
@@ -1840,7 +1848,7 @@ class Executor:
         if error:
             return Result(False, error)
         if url:
-            return self._shell(["xdg-open", url], timeout=10, grace=LAUNCH_GRACE)
+            return self._launch(["xdg-open", url], timeout=10)
         app = (app or "").strip()
         # "google-chrome:new-window" — a desktop entry plus one of the actions
         # it declares. uwsm-app takes this shape directly.
@@ -1852,7 +1860,7 @@ class Executor:
         if not _DESKTOP_ID_RE.match(app):
             if action:
                 return Result(False, f"{app!r} is not a desktop id, so it has no actions")
-            return self._shell(shlex.split(app), timeout=10, grace=LAUNCH_GRACE)
+            return self._launch(shlex.split(app), timeout=10)
         # uwsm-app happily returns success for a .desktop that does not exist,
         # so the model was told "opened" while nothing appeared and then tried
         # again. Check first and hand back the route that does work.
@@ -1871,7 +1879,7 @@ class Executor:
         if not launcher:
             return Result(False, "no desktop launcher (uwsm-app or gtk-launch)")
         target = f"{app}.desktop:{action}" if action else f"{app}.desktop"
-        return self._shell([launcher, target], timeout=10, grace=LAUNCH_GRACE)
+        return self._launch([launcher, target], timeout=10)
 
     def _tool_omarchy_help(self, query: str, topic: str = "commands",
                            limit: int = 12, offset: int = 0) -> Result:
@@ -2465,7 +2473,7 @@ class Executor:
 
             before = {c.get("address") for c in self._query_json("clients")}
             self.on_action("compose_windows", f"open {label} ({' '.join(argv)})")
-            started = self._shell(argv, timeout=30, grace=LAUNCH_GRACE)
+            started = self._launch(argv, timeout=30)
             if not started.ok:
                 placed.append(None)
                 slow.append(f"{label} (failed: {started.output[:60]})")
@@ -2682,8 +2690,7 @@ class Executor:
         if panes and self._terminal_on_screen():
             idle = [p for p in panes if p["idle"]]
             return (idle or panes)[0], ""
-        started = self._shell(["omarchy", "launch", "terminal", "tmux"],
-                              timeout=20, grace=LAUNCH_GRACE)
+        started = self._launch(["omarchy", "launch", "terminal", "tmux"], timeout=20)
         if not started.ok:
             return None, f"could not open a terminal: {started.output}"
         deadline = time.monotonic() + TERMINAL_ATTACH_TIMEOUT
