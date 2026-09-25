@@ -170,5 +170,174 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session_mod.daemon_running())
 
 
+class FakeRecorder:
+    """Stands in for pw-record: a stdout that hits EOF when the process dies."""
+
+    def __init__(self):
+        self.returncode = None
+        self.stdout = asyncio.StreamReader()
+
+    def terminate(self):
+        self.kill()
+
+    def kill(self):
+        if self.returncode is None:
+            self.returncode = -15
+            self.stdout.feed_eof()
+
+    async def wait(self):
+        return self.returncode
+
+
+class ScriptedServer:
+    """Per-connection scripts: each connection runs the next callable in `plans`."""
+
+    def __init__(self, plans):
+        self.plans = list(plans)
+        self.connections = 0
+        self.connected = [asyncio.Event() for _ in plans]
+        self.port = 0
+        self._server = None
+
+    async def start(self):
+        self._server = await serve(self._handle, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+
+    async def stop(self):
+        self._server.close()
+        await self._server.wait_closed()
+
+    async def _handle(self, ws):
+        index = min(self.connections, len(self.plans) - 1)
+        self.connections += 1
+        await ws.send(json.dumps({"type": "session.created", "session": {"id": "s"}}))
+        async for raw in ws:
+            if json.loads(raw).get("type") == "session.update":
+                self.connected[index].set()
+                await self.plans[index](ws)
+                break
+        async for _ in ws:  # keep reading until the client goes away
+            pass
+
+
+@unittest.skipIf(serve is None, "websockets is not installed")
+class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for module, name, value in (
+                (feedback, "LOG_FILE", self.root / "session.log"),
+                (feedback, "STATE_FILE", self.root / "state.json"),
+                (feedback, "STATE_DIR", self.root),
+                (feedback, "RUNTIME_DIR", self.root),
+                (session_mod, "SOCKET_PATH", self.root / "control.sock"),
+                (session_mod, "RUNTIME_DIR", self.root),
+                (realtime, "SAFETY_ID_FILE", self.root / "safety-id"),
+                (realtime, "CONFIG_DIR", self.root),
+                (realtime, "RECONNECT_BASE_DELAY", 0.05),
+                (realtime, "RESPONSE_TIMEOUT_SECONDS", 0.3)):
+            patcher = mock.patch.object(module, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch("omarchy_voice.network.STATE_DIR", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.recorders: list[FakeRecorder] = []
+
+        async def spawn(*_cmd, **_kw):
+            rec = FakeRecorder()
+            self.recorders.append(rec)
+            return rec
+
+        patcher = mock.patch.object(realtime.asyncio, "create_subprocess_exec", spawn)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def _serve(self, plans):
+        server = ScriptedServer(plans)
+        await server.start()
+        self.addCleanup(server.stop)
+        patcher = mock.patch.object(
+            realtime, "REALTIME_URL", f"ws://127.0.0.1:{server.port}/v1/realtime")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return server
+
+    def _status(self):
+        return json.loads((self.root / "state.json").read_text())["status"]
+
+    async def _finish(self, session, runner):
+        await asyncio.to_thread(session_mod.send_control, "quit")
+        self.assertEqual(await asyncio.wait_for(runner, timeout=10), 0)
+
+    async def test_drop_while_listening_leaves_no_recorder_behind(self):
+        async def drop(ws):
+            await asyncio.sleep(0.2)
+            await ws.close()
+
+        async def stay(ws):
+            pass
+
+        server = await self._serve([drop, stay])
+        session = realtime.RealtimeSession(Config(dry_run=True, notify=False))
+        runner = asyncio.create_task(session.run())
+        await asyncio.wait_for(server.connected[0].wait(), timeout=30)
+        await asyncio.to_thread(session_mod.send_control, "start")
+        await asyncio.wait_for(server.connected[1].wait(), timeout=30)
+
+        for _ in range(100):  # the mic loop starts just after the handshake
+            if len(self.recorders) >= 2:
+                break
+            await asyncio.sleep(0.05)
+        # The recorder from the dropped session is gone by the time the new
+        # session is up; only the reopened one may run.
+        self.assertEqual(len(self.recorders), 2)
+        self.assertIsNotNone(self.recorders[0].returncode)
+        self.assertIsNone(self.recorders[1].returncode)
+
+        await asyncio.to_thread(session_mod.send_control, "stop")
+        self.assertTrue(all(r.returncode is not None for r in self.recorders))
+        self.assertEqual(self._status(), "idle")
+        await self._finish(session, runner)
+
+    async def test_silent_session_is_rebuilt_and_answers_next_utterance(self):
+        async def silent(ws):
+            await ws.send(json.dumps({"type": "input_audio_buffer.speech_stopped"}))
+
+        async def answers(ws):
+            await ws.send(json.dumps({"type": "input_audio_buffer.speech_stopped"}))
+            await ws.send(json.dumps({"type": "response.created"}))
+            await ws.send(json.dumps({"type": "response.done",
+                                      "response": {"status": "completed", "output": []}}))
+
+        server = await self._serve([silent, answers])
+        session = realtime.RealtimeSession(Config(dry_run=True, notify=False))
+        runner = asyncio.create_task(session.run())
+        await asyncio.wait_for(server.connected[1].wait(), timeout=30)
+        await asyncio.sleep(0.3)  # let the answer land
+
+        self.assertEqual(server.connections, 2)
+        self.assertIsNotNone(session.ws)
+        self.assertEqual(self._status(), "idle")
+        await self._finish(session, runner)
+
+    async def test_health_check_gives_up_loudly_when_never_answered(self):
+        async def silent(ws):
+            await ws.send(json.dumps({"type": "input_audio_buffer.speech_stopped"}))
+
+        server = await self._serve([silent])
+        with mock.patch.object(realtime, "RECONNECT_ATTEMPTS", 2):
+            session = realtime.RealtimeSession(Config(dry_run=True, notify=False))
+            code = await asyncio.wait_for(session.run(), timeout=30)
+        self.assertEqual(code, 1)
+        self.assertGreaterEqual(server.connections, 2)
+        self.assertEqual(self._status(), "error")
+
+
 if __name__ == "__main__":
     unittest.main()
