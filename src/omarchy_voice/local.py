@@ -1,8 +1,7 @@
 """Local speech engine (`engine = "local"`).
 
-Selection, configuration and microphone capture with endpointing so far: the
-recognition, planning and speech pipeline is not wired in yet, so `run` refuses
-to start rather than pretending.
+Configuration checks, microphone capture with endpointing, and the entry point
+that starts the session loop in `local_session.py`.
 """
 
 from __future__ import annotations
@@ -204,5 +203,14 @@ def stt_warnings(config: Config) -> list[str]:
 
 
 def run(config: Config) -> int:
-    print("the local engine's audio pipeline is not implemented yet", file=sys.stderr)
-    return 1
+    problems = config_problems(config)
+    if problems:
+        for problem in problems:
+            print(f"cannot start local engine: {problem}", file=sys.stderr)
+        return 1
+    from .local_session import LocalSession
+    from .realtime import _run_until_done
+    try:
+        return _run_until_done(LocalSession(config))
+    except KeyboardInterrupt:
+        return 0

@@ -27,11 +27,18 @@ class LocalEngineTests(unittest.TestCase):
         self.assertTrue(any("stt_url" in p for p in problems))
         self.assertTrue(any("planner_base_url" in p for p in problems))
 
-    def test_run_refuses_until_pipeline_exists(self):
+    def test_run_refuses_an_incomplete_config(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            self.assertEqual(local.run(config.Config(engine="local")), 1)
-        self.assertIn("not implemented", err.getvalue())
+            self.assertEqual(local.run(config.Config(engine="local", local_stt_url="")), 1)
+        self.assertIn("stt_url", err.getvalue())
+
+    def test_run_starts_the_session(self):
+        from omarchy_voice import local_session, realtime
+        with mock.patch.object(local_session, "LocalSession") as session, \
+             mock.patch.object(realtime, "_run_until_done", return_value=0) as runner:
+            self.assertEqual(local.run(config.Config(engine="local")), 0)
+        runner.assert_called_once_with(session.return_value)
 
     def test_cmd_run_dispatches_local(self):
         args = cli.build_parser().parse_args(["run", "--engine", "local"])
