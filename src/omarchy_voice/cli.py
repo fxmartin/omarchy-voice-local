@@ -210,8 +210,10 @@ def cmd_doctor(args, config) -> int:
         from .live import config_problems
         problems.extend(config_problems(config))
     elif config.engine == "local":
-        from .local import config_problems
+        from .local import config_problems, stt_warnings
         problems.extend(config_problems(config))
+        for warning in stt_warnings(config):
+            print(f"  ! {warning}")
     elif config.engine != "realtime":
         problems.append(f"unknown voice engine: {config.engine}")
     if problems:

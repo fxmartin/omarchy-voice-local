@@ -109,7 +109,9 @@ transcribe_model = "gpt-4o-mini-transcribe"  # user-audio transcripts; "" disabl
 # Local engine: select with `engine = "local"` under [openai], or
 # `omarchy-voice run --engine local`. Every key is optional; defaults shown.
 # [local]
-# stt_url = "http://127.0.0.1:9000"   # speech-recognition server
+# stt_url = "http://127.0.0.1:9000"   # whisper.cpp server; keep it on loopback,
+#                                     # any other address sends your audio there
+# stt_timeout_seconds = 20            # give up on one utterance after this long
 # language = "en"                     # recognition language
 # piper_model = ""                    # path to a Piper voice .onnx file
 # planner_base_url = "https://api.openai.com/v1"  # any OpenAI-compatible server,

@@ -205,6 +205,7 @@ class Config:
     # Under [local] in the config file; selected with engine = "local". Fully
     # offline by default: every URL points at this machine.
     local_stt_url: str = "http://127.0.0.1:9000"  # speech-recognition server
+    local_stt_timeout_seconds: float = 20.0  # give up on one utterance after this
     local_language: str = "en"  # recognition language
     local_piper_model: str = ""  # path to a Piper voice .onnx; empty = unset
     # The brain starts on OpenAI chat; point these at any OpenAI-compatible

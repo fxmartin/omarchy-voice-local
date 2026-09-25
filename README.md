@@ -107,6 +107,9 @@ engine = "live"
 
 For fully local speech, set `engine = "local"` and configure `[local]` (see
 `share/config.example.toml`), or run `omarchy-voice run --engine local`.
+Recognition uses a whisper.cpp server at `[local] stt_url` (loopback by
+default, so audio stays on your machine); `omarchy-voice doctor` warns if you
+point it at another address.
 
 See [Live setup](docs/live.md) for model access, session limits, audio behavior,
 and switching engines. Shell execution is disabled by default. Confirmation

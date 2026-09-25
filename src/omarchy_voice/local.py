@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import ipaddress
 import sys
 from typing import Awaitable, Callable
+from urllib.parse import urlsplit
 
 from .config import Config
 from .feedback import Feedback
@@ -181,6 +183,24 @@ class LocalCapture:
             # Leave the meter at rest, or the orb keeps the last loud frame.
             self.feedback.level(0.0)
             self.feedback.log("mic     stopped")
+
+
+def _is_loopback(url: str) -> bool:
+    host = urlsplit(url).hostname or ""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def stt_warnings(config: Config) -> list[str]:
+    """Privacy notices for doctor: a non-loopback server receives your voice."""
+    if config.local_stt_url and not _is_loopback(config.local_stt_url):
+        return [f"[local] stt_url {config.local_stt_url} is not a loopback address; "
+                "audio leaves this machine"]
+    return []
 
 
 def run(config: Config) -> int:
