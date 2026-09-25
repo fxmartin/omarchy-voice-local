@@ -20,7 +20,7 @@ from .config import Config
 from .persona import PERSONA
 from .tools import TOOL_SCHEMAS, Executor, tools_for
 
-CHAT_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
 @dataclass
@@ -65,9 +65,47 @@ class PlannerUnavailable(RuntimeError):
 
 
 class Planner:
-    def __init__(self, config: Config, executor: Executor):
+    """Runs spoken instructions through a chat model and the tool executor.
+
+    With no keyword arguments this is the one-shot OpenAI planner behind
+    `omarchy-voice say`: no memory, a key is mandatory. `for_local` builds the
+    variant for the local engine: any OpenAI-compatible endpoint, an optional
+    key, and an in-memory history of the last `history_turns` exchanges.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        executor: Executor,
+        *,
+        base_url: str = OPENAI_BASE_URL,
+        model: str | None = None,
+        api_key_env: str | None = None,
+        key_required: bool = True,
+        history_turns: int = 0,
+    ):
         self.config = config
         self.executor = executor
+        self.base_url = base_url
+        self.model = model or config.planner_model
+        self.api_key_env = api_key_env if api_key_env is not None else config.api_key_env
+        self.key_required = key_required
+        self.history_turns = history_turns
+        # One entry per completed utterance, each the messages it added
+        # (user, tool calls, tool results, reply). Memory only, never saved.
+        self._history: list[list[dict]] = []
+
+    @classmethod
+    def for_local(cls, config: Config, executor: Executor) -> "Planner":
+        return cls(
+            config,
+            executor,
+            base_url=config.local_planner_base_url,
+            model=config.local_planner_model,
+            api_key_env=config.local_planner_api_key_env,
+            key_required=bool(config.local_planner_api_key_env),
+            history_turns=config.local_history_turns,
+        )
 
     def think(self, text: str) -> Turn:
         turn = Turn(text=text)
@@ -84,21 +122,25 @@ class Planner:
         return turn
 
     def _loop(self, text: str, turn: Turn) -> str:
-        key = os.environ.get(self.config.api_key_env, "")
-        if not key:
+        key = os.environ.get(self.api_key_env, "") if self.api_key_env else ""
+        if not key and self.key_required:
             raise PlannerUnavailable(
-                f"{self.config.api_key_env} is not set — "
+                f"{self.api_key_env} is not set — "
                 "put it in ~/.config/omarchy-voice/env")
 
+        history = [m for exchange in self._history for m in exchange]
         messages: list[dict] = [
             {"role": "system", "content": _system_prompt(self.config)},
+            *history,
             {"role": "user", "content": text},
         ]
+        start = len(history) + 1
         tools = to_chat_tools(tools_for(self.config))
         reply = ""
 
         for _ in range(self.config.max_turns):
-            data = _chat(messages, tools, self.config, key)
+            data = _chat(messages, tools, self.config, key,
+                         base_url=self.base_url, model=self.model)
             usage = data.get("usage") or {}
             if usage:
                 turn.tokens = {
@@ -112,7 +154,9 @@ class Planner:
                 reply = said
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
-                return reply or "Done."
+                reply = reply or "Done."
+                self._remember(messages, start, reply)
+                return reply
 
             messages.append({
                 "role": "assistant",
@@ -137,25 +181,40 @@ class Planner:
                     "content": outcome_text,
                 })
             if self.executor.pending:
-                return reply or "That needs confirmation."
+                reply = reply or "That needs confirmation."
+                self._remember(messages, start, reply)
+                return reply
 
-        return reply or "Ran out of steps on that one."
+        reply = reply or "Ran out of steps on that one."
+        self._remember(messages, start, reply)
+        return reply
+
+    def _remember(self, messages: list[dict], start: int, reply: str) -> None:
+        """Keep this utterance for the next one, dropping the oldest past the cap."""
+        if self.history_turns <= 0:
+            return
+        exchange = messages[start:]
+        if exchange[-1].get("role") != "assistant" or exchange[-1].get("tool_calls"):
+            exchange.append({"role": "assistant", "content": reply})
+        self._history.append(exchange)
+        del self._history[:-self.history_turns]
 
 
-def _chat(messages: list[dict], tools: list[dict], config: Config, key: str) -> dict:
+def _chat(messages: list[dict], tools: list[dict], config: Config, key: str,
+          *, base_url: str = OPENAI_BASE_URL, model: str | None = None) -> dict:
     body = json.dumps({
-        "model": config.planner_model,
+        "model": model or config.planner_model,
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
     }).encode()
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     request = urllib.request.Request(
-        CHAT_URL,
+        f"{base_url.rstrip('/')}/chat/completions",
         data=body,
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -163,6 +222,6 @@ def _chat(messages: list[dict], tools: list[dict], config: Config, key: str) -> 
             return json.loads(response.read())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode()[:400]
-        raise PlannerUnavailable(f"OpenAI HTTP {exc.code}: {detail}") from exc
+        raise PlannerUnavailable(f"planner HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
-        raise PlannerUnavailable(f"could not reach OpenAI: {exc.reason}") from exc
+        raise PlannerUnavailable(f"could not reach the planner: {exc.reason}") from exc
