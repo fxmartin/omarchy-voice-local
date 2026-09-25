@@ -110,6 +110,9 @@ For fully local speech, set `engine = "local"` and configure `[local]` (see
 Recognition uses a whisper.cpp server at `[local] stt_url` (loopback by
 default, so audio stays on your machine); `omarchy-voice doctor` warns if you
 point it at another address.
+Local replies are spoken sentence by sentence by Piper through PipeWire; set
+`piper_model` to a voice `.onnx` file. If `piper` or the voice is missing, the
+reply is shown as a notification instead and the failure is logged once.
 
 See [Live setup](docs/live.md) for model access, session limits, audio behavior,
 and switching engines. Shell execution is disabled by default. Confirmation
