@@ -217,9 +217,12 @@ class Config:
     # memory for the session only; 0 turns memory off.
     local_history_turns: int = 10
     # Endpointing: an utterance ends after this much silence, and speech
-    # shorter than the minimum is discarded as noise.
+    # shorter than the minimum is discarded as noise. An utterance still open
+    # at the maximum is cut and sent, and the pre-roll keeps the first syllable.
     local_endpoint_silence_ms: int = 700
     local_endpoint_min_speech_ms: int = 250
+    local_endpoint_max_speech_ms: int = 15000
+    local_endpoint_preroll_ms: int = 300
 
     # --- ears --------------------------------------------------------------
     # There is no mode. Listening is off when the daemon starts and only the
