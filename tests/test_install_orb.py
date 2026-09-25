@@ -57,6 +57,27 @@ class InstallOrbTests(unittest.TestCase):
         self.assertIn("restart-shell", calls)
         self.assertNotIn("refresh-shell", calls)
 
+    def test_failed_enable_warns_and_skips_restart(self):
+        self.fake("omarchy", 'echo "omarchy $*" >> "$CALLS"; exit 1')
+        result = self.run_script("install.sh", "y\nn\nn\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("omarchy plugin enable voice.orb", result.stdout + result.stderr)
+        self.assertNotIn("restart-shell", self.calls())
+
+    def test_failed_restart_tells_user_the_command(self):
+        self.fake("omarchy-restart-shell", "exit 1")
+        result = self.run_script("install.sh", "y\nn\nn\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("omarchy-restart-shell", result.stdout + result.stderr)
+        self.assertNotIn("refresh-shell", self.calls())
+
+    def test_uninstall_without_omarchy_cli_still_removes_orb(self):
+        self.install()
+        (self.bin / "omarchy").unlink()
+        result = self.run_script("uninstall.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.home / ".config/omarchy/plugins/voice.orb").exists())
+
     def test_declining_desktop_integration_leaves_orb_out(self):
         result = self.run_script("install.sh", "n\nn\nn\n")
         self.assertEqual(result.returncode, 0, result.stderr)
