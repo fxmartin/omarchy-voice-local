@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from omarchy_voice.piper_speech import PiperSpeaker, split_sentences
+from omarchy_voice.piper_speech import DEFAULT_RATE, PiperSpeaker, split_sentences, voice_rate
 
 
 class FakePlayer:
@@ -177,6 +181,80 @@ class SpeakTests(unittest.IsolatedAsyncioTestCase):
         await speaker.wait()
         self.assertEqual(notices, [("Oma", "Hello.")])
         self.assertIn("model", logs[0])
+
+
+class VoiceRateTests(unittest.TestCase):
+    def test_reads_sample_rate_from_voice_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp, "v.onnx")
+            Path(f"{model}.json").write_text('{"audio": {"sample_rate": 16000}}')
+            self.assertEqual(voice_rate(str(model)), 16000)
+
+    def test_falls_back_when_config_is_missing_or_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp, "v.onnx")
+            self.assertEqual(voice_rate(str(model)), DEFAULT_RATE)
+            Path(f"{model}.json").write_text("{not json")
+            self.assertEqual(voice_rate(str(model)), DEFAULT_RATE)
+            Path(f"{model}.json").write_text("{}")
+            self.assertEqual(voice_rate(str(model)), DEFAULT_RATE)
+
+
+class PiperProcessTests(unittest.IsolatedAsyncioTestCase):
+    """Drive the real `_piper` subprocess path with a fake `piper` executable."""
+
+    def _install(self, script: str) -> tuple[str, str]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        exe = Path(tmp.name, "piper")
+        exe.write_text("#!/bin/sh\n" + script)
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+        model = Path(tmp.name, "voice.onnx")
+        model.write_bytes(b"")
+        patcher = mock.patch.dict(os.environ, {"PATH": f"{tmp.name}:{os.environ['PATH']}"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return str(exe), str(model)
+
+    async def test_speaks_through_piper_and_trims_odd_byte(self):
+        _, model = self._install("cat >/dev/null; printf 'abcde'")
+        player = FakePlayer()
+        speaker = PiperSpeaker(model, player=player, which=lambda n: "/x/piper")
+        speaker.speak("Hello.")
+        await speaker.wait()
+        self.assertEqual(player.written, [b"abcd"])
+
+    async def test_nonzero_exit_is_reported(self):
+        _, model = self._install("cat >/dev/null; exit 3\n")
+        notices, logs = [], []
+        speaker = PiperSpeaker(model, player=FakePlayer(), which=lambda n: "/x/piper",
+                               notify=lambda t, b: notices.append((t, b)), log=logs.append)
+        speaker.speak("Hello.")
+        await speaker.wait()
+        self.assertEqual(notices, [("Oma", "Hello.")])
+        self.assertIn("exited with 3", logs[0])
+
+    async def test_stop_kills_a_running_piper(self):
+        _, model = self._install("cat >/dev/null; sleep 30\n")
+        speaker = PiperSpeaker(model, player=FakePlayer(), which=lambda n: "/x/piper")
+        speaker.speak("Hello.")
+        await asyncio.sleep(.3)
+        await asyncio.wait_for(speaker.stop(), 5)
+        self.assertFalse(speaker.is_speaking())
+
+    async def test_stop_and_wait_are_safe_when_idle(self):
+        speaker, _, _ = make(lambda s: None)
+        await speaker.stop()
+        await speaker.wait()
+        self.assertEqual(speaker._player.interrupts, 1)
+
+    def test_default_player_is_a_live_speaker_at_the_voice_rate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp, "v.onnx")
+            Path(f"{model}.json").write_text('{"audio": {"sample_rate": 16000}}')
+            speaker = PiperSpeaker(str(model))
+            self.assertEqual(speaker._player.rate, 16000)
+            self.assertEqual(speaker._player.queued_seconds(), 0)
 
 
 if __name__ == "__main__":
