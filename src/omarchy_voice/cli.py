@@ -205,20 +205,26 @@ def cmd_doctor(args, config) -> int:
         print(f"  {_tick(True)} per-install safety identifier at {cfg.SAFETY_ID_FILE}")
 
     print(_bold("\nears"))
-    problems = realtime_mod.check_ready(config)
+    if config.engine == "local":
+        from . import local
+        problems = local.ready_problems(config)
+    else:
+        problems = realtime_mod.check_ready(config)
     if config.engine == "live":
         from .live import config_problems
         problems.extend(config_problems(config))
     elif config.engine == "local":
-        from .local import config_problems, stt_warnings
-        problems.extend(config_problems(config))
-        for warning in stt_warnings(config):
+        for warning in local.stt_warnings(config):
             print(f"  ! {warning}")
+        for ok, line in local.setup_checks(config):
+            print(f"  {_tick(ok)} {line}")
     elif config.engine != "realtime":
         problems.append(f"unknown voice engine: {config.engine}")
     if problems:
         for problem in problems:
             print(f"  {_tick(False)} {problem}")
+    elif config.engine == "local":
+        print(f"  {_tick(True)} PipeWire tools, microphone and planner settings present")
     else:
         print(f"  {_tick(True)} websockets, API key, and PipeWire tools all present")
     if config.engine == "live":
@@ -229,7 +235,11 @@ def cmd_doctor(args, config) -> int:
     else:
         print(f"  → OpenAI Realtime (speech to speech), "
               f"{config.realtime_turn_detection}, toggle-only")
-    print("  ! while listening is on, room audio streams continuously to OpenAI.")
+    if config.engine == "local":
+        print("  → audio stays on this machine; only recognised text goes to the")
+        print(f"    planner at {config.local_planner_base_url}.")
+    else:
+        print("  ! while listening is on, room audio streams continuously to OpenAI.")
     print("    It starts off, and only SUPER + SHIFT + V turns it on. Toggling")
     print("    off kills the recorder, so nothing is captured while muted.")
     source = config.device or realtime_mod.default_source()

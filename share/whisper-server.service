@@ -1,0 +1,29 @@
+[Unit]
+Description=whisper.cpp speech recognition for omarchy-voice's local engine
+Documentation=https://github.com/wombatoperator/omarchy-voice/blob/main/docs/local.md
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# Change the model with `systemctl --user edit whisper-server`:
+#   [Service]
+#   Environment=WHISPER_MODEL=%h/.local/share/omarchy-voice/models/ggml-base.en.bin
+Environment=WHISPER_MODEL=%h/.local/share/omarchy-voice/models/ggml-small.en.bin
+# Loopback only: this port receives your voice.
+ExecStart=/usr/bin/whisper-server --host 127.0.0.1 --port 9000 --model ${WHISPER_MODEL}
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=graphical-session.target
