@@ -442,3 +442,88 @@ class TerminateTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MicLoopCleanupTests(unittest.IsolatedAsyncioTestCase):
+    """Every way a capture ends must reap its recorder and say "mic stopped"."""
+
+    def setUp(self):
+        self.session = realtime.RealtimeSession(Config(dry_run=True, notify=False))
+        self.session.feedback = mock.Mock()
+        self.session.ws = mock.AsyncMock()
+        self.recorders: list[FakeRecorder] = []
+
+        async def spawn(*_cmd, **_kw):
+            self.recorders.append(FakeRecorder())
+            return self.recorders[-1]
+
+        patcher = mock.patch.object(realtime.asyncio, "create_subprocess_exec", spawn)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def logged(self):
+        return [c.args[0] for c in self.session.feedback.log.call_args_list]
+
+    async def _capturing(self):
+        for _ in range(100):
+            if self.recorders and "mic     capturing" in self.logged():
+                return self.recorders[-1]
+            await asyncio.sleep(0.01)
+        self.fail("the recorder never started")
+
+    async def test_a_recorder_that_dies_on_its_own_fails_the_session(self):
+        self.session._active_event.set()
+        loop = asyncio.create_task(self.session._mic_loop())
+        recorder = await self._capturing()
+        recorder.stdout.feed_eof()  # pw-record exits while still listening
+        await asyncio.wait_for(loop, timeout=5)
+
+        self.assertIn("error   pw-record ended unexpectedly", self.logged())
+        self.assertEqual(self.session._exit_code, 1)
+        self.assertTrue(self.session._stop.is_set())
+        self.assertIsNotNone(recorder.returncode)
+        self.assertEqual(self.session._recorders, set())
+        self.assertEqual(self.logged()[-1], "mic     stopped")
+
+    async def test_muting_between_frames_stops_the_recorder(self):
+        self.session._active_event.set()
+        loop = asyncio.create_task(self.session._mic_loop())
+        recorder = await self._capturing()
+        # Mute lands while a frame is in flight: the loop sees it on the next
+        # check, not through an EOF.
+        self.session._active_event.clear()
+        recorder.stdout.feed_data(b"\0" * realtime.FRAME_BYTES)
+        for _ in range(100):
+            if "mic     stopped" in self.logged():
+                break
+            await asyncio.sleep(0.01)
+
+        self.assertIn("mic     stopped", self.logged())
+        self.assertIsNotNone(recorder.returncode)
+        self.assertEqual(self.session._recorders, set())
+        self.assertIsNone(self.session._mic)
+        self.assertNotIn("error   pw-record ended unexpectedly", self.logged())
+        self.session._stop.set()
+        await asyncio.wait_for(loop, timeout=5)
+
+    async def test_a_failed_connect_spawns_no_recorder_and_clears_the_watchdog(self):
+        self.session.loop = asyncio.get_running_loop()
+        self.session._arm_response_watchdog()
+        self.session.speaker.interrupt = mock.AsyncMock()
+
+        class Refused:
+            async def __aenter__(self):
+                raise OSError("connection refused")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        with mock.patch.object(realtime, "_open_socket", return_value=Refused()), \
+                mock.patch.object(self.session.config, "network_enabled", False):
+            with self.assertRaises(OSError):
+                await self.session._open_one("ws://127.0.0.1:9/", {})
+
+        self.assertEqual(self.recorders, [])
+        self.assertIsNone(self.session._response_watchdog)
+        self.assertIsNone(self.session.ws)
+        self.session.speaker.interrupt.assert_awaited_once()
