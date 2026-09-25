@@ -117,7 +117,7 @@ RETIRED_KEYS = {
 
 # Sections whose keys are namespaced rather than flattened, because the plain
 # names are already taken by another section.
-PREFIXED_SECTIONS = {"realtime", "live", "tasks", "network", "vision"}
+PREFIXED_SECTIONS = {"realtime", "live", "local", "tasks", "network", "vision"}
 
 # List-valued policy keys union with the built-in lists unless the matching
 # `*_replace` flag is set. Unknown keys are kept so doctor can report typos.
@@ -200,6 +200,20 @@ class Config:
     tasks_max_output_tokens: int = 8192
     tasks_command_timeout_seconds: int = 600
     tasks_max_log_bytes: int = 8 * 1024 * 1024
+
+    # --- local -------------------------------------------------------------
+    # Under [local] in the config file; selected with engine = "local". Fully
+    # offline by default: every URL points at this machine.
+    local_stt_url: str = "http://127.0.0.1:9000"  # speech-recognition server
+    local_language: str = "en"  # recognition language
+    local_piper_model: str = ""  # path to a Piper voice .onnx; empty = unset
+    local_planner_base_url: str = "http://127.0.0.1:11434/v1"  # OpenAI-compatible
+    local_planner_model: str = "qwen3:8b"
+    local_planner_api_key_env: str = ""  # local servers usually need no key
+    # Endpointing: an utterance ends after this much silence, and speech
+    # shorter than the minimum is discarded as noise.
+    local_endpoint_silence_ms: int = 700
+    local_endpoint_min_speech_ms: int = 250
 
     # --- ears --------------------------------------------------------------
     # There is no mode. Listening is off when the daemon starts and only the

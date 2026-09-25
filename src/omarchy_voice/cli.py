@@ -63,6 +63,9 @@ def cmd_run(args, config) -> int:
     if config.engine == "live":
         from . import live
         return live.run(config)
+    if config.engine == "local":
+        from . import local
+        return local.run(config)
     if config.engine != "realtime":
         print(f"unknown voice engine: {config.engine}", file=sys.stderr)
         return 1
@@ -179,6 +182,9 @@ def cmd_doctor(args, config) -> int:
         print(f"  → Live model {config.live_model}, voice {config.live_voice}")
         print(f"  → backend {config.live_backend_model}, max output {config.live_max_output_tokens}")
         print("  → Live voice: $0.05/minute plus backend usage; disconnects on mute")
+    elif config.engine == "local":
+        print(f"  → local engine: recognition {config.local_stt_url}, "
+              f"planner {config.local_planner_model} at {config.local_planner_base_url}")
     else:
         print(f"  → realtime model {config.realtime_model}, voice {config.realtime_voice}")
     if config.tasks_enabled:
@@ -203,6 +209,9 @@ def cmd_doctor(args, config) -> int:
     if config.engine == "live":
         from .live import config_problems
         problems.extend(config_problems(config))
+    elif config.engine == "local":
+        from .local import config_problems
+        problems.extend(config_problems(config))
     elif config.engine != "realtime":
         problems.append(f"unknown voice engine: {config.engine}")
     if problems:
@@ -213,6 +222,8 @@ def cmd_doctor(args, config) -> int:
     if config.engine == "live":
         print("  → OpenAI Live with Responses delegation, toggle-only")
         print(f"  → session limit {config.live_max_session_seconds:g}s; no connection at boot")
+    elif config.engine == "local":
+        print("  → local engine (offline speech recognition and Piper), toggle-only")
     else:
         print(f"  → OpenAI Realtime (speech to speech), "
               f"{config.realtime_turn_detection}, toggle-only")
@@ -331,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_say)
 
     p = sub.add_parser("run", help="start the listening daemon")
-    p.add_argument("--engine", choices=("realtime", "live"),
+    p.add_argument("--engine", choices=("realtime", "live", "local"),
                    help="override the configured voice backend")
     p.set_defaults(func=cmd_run)
 

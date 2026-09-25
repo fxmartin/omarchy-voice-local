@@ -73,3 +73,44 @@ class ConfigLoadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalEngineConfigTests(unittest.TestCase):
+    def load(self, text: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(text)
+            return cfg.load(path)
+
+    def test_local_keys_are_prefixed_and_have_defaults(self):
+        default = cfg.Config()
+        self.assertEqual(default.engine, "realtime")
+        loaded = self.load('[local]\nstt_url = "http://x:1"\nplanner_model = "m"\n')
+        self.assertEqual(loaded.local_stt_url, "http://x:1")
+        self.assertEqual(loaded.local_planner_model, "m")
+        self.assertEqual(loaded.planner_model, default.planner_model)
+        self.assertEqual(loaded.unknown_keys, [])
+
+    def test_engine_local_is_selectable_and_flag_overrides(self):
+        self.assertEqual(self.load('[openai]\nengine = "local"\n').engine, "local")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text('[openai]\nengine = "live"\n')
+            self.assertEqual(cfg.load(path, engine="local").engine, "local")
+
+    def test_misspelled_local_key_is_reported(self):
+        loaded = self.load('[local]\nstt_ulr = "x"\n')
+        self.assertEqual(loaded.unknown_keys, ["local_stt_ulr"])
+
+    def test_cli_accepts_engine_local(self):
+        from omarchy_voice import cli
+        self.assertEqual(
+            cli.build_parser().parse_args(["run", "--engine", "local"]).engine, "local")
+
+    def test_example_config_keys_are_known(self):
+        text = (Path(__file__).resolve().parent.parent / "share/config.example.toml").read_text()
+        uncommented = text.replace("# stt_url", "stt_url").replace("# [local]", "[local]")
+        for key in ("language", "piper_model", "planner_base_url", "planner_model",
+                    "planner_api_key_env", "endpoint_silence_ms", "endpoint_min_speech_ms"):
+            uncommented = uncommented.replace(f"# {key} =", f"{key} =")
+        self.assertEqual(self.load(uncommented).unknown_keys, [])
