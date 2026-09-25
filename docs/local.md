@@ -69,3 +69,41 @@ other languages.
 `omarchy-voice doctor` checks that the server answers and reports the model the
 service is configured to load. It warns when `[local] stt_url` is not a loopback
 address, because audio would then leave the machine.
+
+## Speech output: Piper
+
+Install Piper with uv. Do not use `pacman -S piper`: the Arch package of that
+name is an unrelated tool for configuring gaming mice.
+
+```sh
+uv tool install piper-tts
+```
+
+Download a voice and its config file. Both must sit side by side, with the
+config named after the model plus `.json`.
+
+```sh
+mkdir -p ~/.local/share/omarchy-voice/voices
+cd ~/.local/share/omarchy-voice/voices
+base=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium
+curl -LO "$base/en_US-lessac-medium.onnx"
+curl -LO "$base/en_US-lessac-medium.onnx.json"
+```
+
+Point the config at the model. `~` is not expanded, so use the full path:
+
+```toml
+[local]
+piper_model = "/home/you/.local/share/omarchy-voice/voices/en_US-lessac-medium.onnx"
+```
+
+Other voices and languages are listed in the
+[Piper voice catalogue](https://huggingface.co/rhasspy/piper-voices). Replies
+are spoken sentence by sentence, so the first sentence starts while the rest
+are still being synthesized. With `en_US-lessac-medium` each sentence takes
+about 1.2 seconds to synthesize on the reference laptop, most of it loading the
+voice.
+
+`omarchy-voice doctor` checks the Piper binary, the voice and its config, and
+synthesizes a short test phrase without playing it. If Piper or the voice is
+missing at runtime, replies are shown as notifications instead.
