@@ -11,10 +11,13 @@ Run with: python3 -m unittest discover -s tests
 """
 
 import asyncio
+import contextlib
+import io
 import json
 import sys
 import time
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1116,3 +1119,352 @@ class EchoRiskTests(unittest.TestCase):
     def test_nothing_is_claimed_when_the_devices_cannot_be_read(self):
         self.assertEqual(self.risk(Config(barge_in=True, device=""), ""), "")
 
+
+
+class EventLoggingTests(unittest.IsolatedAsyncioTestCase):
+    """What the server reports must reach the log and the bar, and nothing more."""
+
+    def setUp(self):
+        self.config = Config(dry_run=True, notify=False)
+        self.session = realtime.RealtimeSession(self.config)
+        self.session.feedback = mock.Mock()
+        self.session.ws = FakeSocket()
+
+    def logged(self):
+        return "\n".join(c.args[0] for c in self.session.feedback.log.call_args_list)
+
+    async def test_session_id_is_logged(self):
+        await self.session._on_event({"type": "session.created", "session": {"id": "sess_1"}})
+        self.assertIn("sess_1", self.logged())
+
+    async def test_a_spoken_reply_is_assembled_logged_and_notified(self):
+        for piece in ("Opening ", "the browser."):
+            await self.session._on_event(
+                {"type": "response.output_audio_transcript.delta", "delta": piece})
+        await self.session._on_event({"type": "response.output_audio_transcript.done"})
+        self.assertIn("'Opening the browser.'", self.logged())
+        self.session.feedback.notify.assert_called_once_with("Opening the browser.")
+        self.assertEqual(self.session._transcript, "")
+
+    async def test_an_empty_reply_is_not_notified(self):
+        await self.session._on_event(
+            {"type": "response.output_audio_transcript.done", "transcript": "  "})
+        self.session.feedback.notify.assert_not_called()
+
+    async def test_what_was_heard_is_logged(self):
+        await self.session._on_event({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": " open firefox "})
+        self.assertIn("'open firefox'", self.logged())
+
+    async def test_a_failed_transcription_says_why(self):
+        await self.session._on_event({
+            "type": "conversation.item.input_audio_transcription.failed",
+            "error": {"message": "audio too short"}})
+        self.assertIn("transcription failed: audio too short", self.logged())
+
+    async def test_rate_limits_are_written_down(self):
+        await self.session._on_event({"type": "rate_limits.updated", "rate_limits": [
+            {"name": "tokens", "remaining": 100, "limit": 40000, "reset_seconds": 3}]})
+        self.assertIn("tokens: 100/40000 left, resets in 3s", self.logged())
+
+    async def test_a_benign_race_stays_quiet(self):
+        await self.session._on_event({"type": "error", "error": {
+            "code": "response_cancel_not_active", "message": "nothing to cancel"}})
+        self.assertIn("note    response_cancel_not_active", self.logged())
+        self.session.feedback.state.assert_not_called()
+        self.session.feedback.notify.assert_not_called()
+
+    async def test_a_real_error_turns_the_bar_red_and_notifies(self):
+        await self.session._on_event({"type": "error", "error": {
+            "code": "invalid_value", "message": "bad voice", "param": "voice"}})
+        message = "invalid_value: bad voice (param voice)"
+        self.session.feedback.state.assert_called_once_with("error", message)
+        self.session.feedback.notify.assert_called_once_with(
+            "Voice error", message, urgency="normal")
+
+
+class LocalConfirmTests(unittest.IsolatedAsyncioTestCase):
+    """The keybind confirm/cancel path, which does not go through the model."""
+
+    setUp = RealtimeSessionTests.setUp
+    hold_a_reboot = RealtimeSessionTests.hold_a_reboot
+
+    async def test_nothing_held_means_nothing_to_confirm_or_cancel(self):
+        self.assertEqual(await self.session._local_confirm(), "nothing to confirm")
+        self.assertEqual(await self.session._local_cancel(), "nothing to cancel")
+
+    async def test_a_local_confirm_runs_the_held_action(self):
+        self.hold_a_reboot()
+        output = await self.session._local_confirm()
+        self.assertFalse(output.startswith("ERROR:"), output)
+        self.assertIsNone(self.session.executor.pending)
+        self.assertIn("CONFIRM omarchy reboot", "\n".join(self.session.executor.transcript))
+
+    async def test_a_local_cancel_drops_the_held_action_without_running_it(self):
+        self.hold_a_reboot()
+        output = await self.session._local_cancel()
+        self.assertTrue(output.startswith("Cancelled:"), output)
+        self.assertIn("It was not run.", output)
+        self.assertIsNone(self.session.executor.pending)
+        self.assertNotIn("CONFIRM omarchy reboot", "\n".join(self.session.executor.transcript))
+
+
+class TaskNoticeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.session = realtime.RealtimeSession(Config(dry_run=True, notify=False))
+        self.session.feedback = mock.Mock()
+        self.manager = mock.Mock()
+        self.manager.store.notices.return_value = [{"id": 7, "text": "build done"}]
+        self.session.executor.task_manager = mock.Mock(return_value=self.manager)
+
+    async def test_disabled_tasks_are_never_polled(self):
+        self.session.config.tasks_enabled = False
+        await self.session._poll_task_notices()
+        self.session.executor.task_manager.assert_not_called()
+
+    async def test_a_delivered_notice_is_acknowledged(self):
+        self.session.feedback.notify.return_value = True
+        await self.session._poll_task_notices()
+        self.session.feedback.notify.assert_called_once_with("OMA task", "build done")
+        self.manager.store.acknowledge.assert_called_once_with(7)
+
+    async def test_an_undelivered_notice_is_kept_for_later(self):
+        self.session.feedback.notify.return_value = False
+        await self.session._poll_task_notices()
+        self.manager.store.acknowledge.assert_not_called()
+
+    async def test_a_broken_task_store_is_logged_not_raised(self):
+        self.session.executor.task_manager.side_effect = RuntimeError("db locked")
+        await self.session._poll_task_notices()
+        self.session.feedback.log.assert_called_once_with("warn    task notices: db locked")
+
+    async def test_a_finished_job_while_muted_is_a_notification_not_speech(self):
+        self.session.ws = FakeSocket()
+        await self.session._announce({"vanished": True, "timed_out": False,
+                                      "label": "make", "target": "%3", "tail": ""})
+        self.session.feedback.notify.assert_called_once_with(
+            "Oma", "The pane running make was closed.")
+        self.assertEqual(self.session.ws.sent, [])
+
+
+class FakeStdin:
+    def __init__(self, fail=False):
+        self.written = []
+        self.closed = False
+        self.fail = fail
+
+    def write(self, data):
+        self.written.append(data)
+
+    async def drain(self):
+        if self.fail:
+            raise BrokenPipeError
+
+    def close(self):
+        self.closed = True
+
+
+class FakePlayer:
+    def __init__(self, fail=False):
+        self.stdin = FakeStdin(fail)
+        self.returncode = None
+        self.terminated = False
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = 0
+
+    def kill(self):
+        self.returncode = -9
+
+    async def wait(self):
+        return self.returncode
+
+
+class SpeakerProcessTests(unittest.IsolatedAsyncioTestCase):
+    """pw-cat is started on demand, replaced when it dies, and reaped on close."""
+
+    async def asyncSetUp(self):
+        self.players = []
+        self.fail_next = False
+
+        async def spawn(*argv, **kwargs):
+            self.players.append(FakePlayer(self.fail_next))
+            self.argv = argv
+            return self.players[-1]
+
+        patcher = mock.patch.object(realtime.asyncio, "create_subprocess_exec", spawn)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.speaker = realtime.Speaker(rate=24000)
+        self.addAsyncCleanup(self.speaker.close)
+
+    async def test_audio_is_piped_into_one_player(self):
+        await self.speaker.write(b"\x01\x00" * 10)
+        await self.speaker.write(b"\x02\x00" * 10)
+        await self.speaker._queue.join()
+        self.assertEqual(len(self.players), 1)
+        self.assertEqual(self.argv[:2], ("pw-cat", "--playback"))
+        self.assertEqual(self.players[0].stdin.written,
+                         [b"\x01\x00" * 10, b"\x02\x00" * 10])
+
+    async def test_a_broken_pipe_starts_a_fresh_player(self):
+        self.fail_next = True
+        await self.speaker.write(b"\x00\x00" * 10)
+        await self.speaker._queue.join()
+        self.fail_next = False
+        await self.speaker.write(b"\x00\x00" * 10)
+        await self.speaker._queue.join()
+        self.assertEqual(len(self.players), 2)
+
+    async def test_close_shuts_the_player_and_drops_queued_audio(self):
+        await self.speaker.write(b"\x00\x00" * 10)
+        await self.speaker._queue.join()
+        await self.speaker.close()
+        player = self.players[0]
+        self.assertTrue(player.stdin.closed)
+        self.assertTrue(player.terminated)
+        self.assertFalse(self.speaker.is_playing())
+        self.assertIsNone(self.speaker._proc)
+
+    async def test_closing_a_speaker_that_never_played_is_harmless(self):
+        await self.speaker.close()
+        self.assertEqual(self.players, [])
+
+
+class PipeWireQueryTests(unittest.TestCase):
+    def reply(self, stdout):
+        return mock.Mock(stdout=stdout)
+
+    def test_the_default_source_is_reported(self):
+        with mock.patch("subprocess.run", return_value=self.reply("alsa_input.mic\n")):
+            self.assertEqual(realtime.default_source(), "alsa_input.mic")
+
+    def test_an_unresolved_default_is_no_source(self):
+        with mock.patch("subprocess.run", return_value=self.reply("@DEFAULT_SOURCE@")):
+            self.assertEqual(realtime.default_source(), "")
+
+    def test_a_missing_pactl_is_no_source_and_no_sink(self):
+        with mock.patch("subprocess.run", side_effect=OSError("no pactl")):
+            self.assertEqual(realtime.default_source(), "")
+            self.assertEqual(realtime.default_sink(), "")
+
+    def test_the_default_sink_is_reported(self):
+        with mock.patch("subprocess.run", return_value=self.reply("alsa_output.hdmi\n")):
+            self.assertEqual(realtime.default_sink(), "alsa_output.hdmi")
+        with mock.patch("subprocess.run", return_value=self.reply("@DEFAULT_SINK@")):
+            self.assertEqual(realtime.default_sink(), "")
+
+
+class ReadinessTests(unittest.TestCase):
+    def check(self, source="alsa_input.mic", key="sk-test", tools=True):
+        env = {"OPENAI_API_KEY": key} if key else {}
+        with mock.patch.dict(realtime.os.environ, env, clear=True), \
+             mock.patch.object(realtime.shutil, "which",
+                               return_value="/usr/bin/x" if tools else None), \
+             mock.patch.object(realtime, "default_source", return_value=source):
+            return realtime.check_ready(Config())
+
+    def test_a_complete_setup_has_no_problems(self):
+        self.assertEqual(self.check(), [])
+
+    def test_each_missing_piece_is_named(self):
+        problems = "\n".join(self.check(source="", key="", tools=False))
+        self.assertIn("OPENAI_API_KEY is not set", problems)
+        self.assertIn("pw-record is missing", problems)
+        self.assertIn("pw-cat is missing", problems)
+        self.assertIn("no audio input", problems)
+
+    def test_a_monitor_source_is_not_a_microphone(self):
+        [problem] = self.check(source="alsa_output.hdmi.monitor")
+        self.assertIn("loopback of speaker output", problem)
+
+
+class RunEntryTests(unittest.TestCase):
+    """`omarchy-voice run`: a missing key is a state, not a crash loop."""
+
+    def run_with(self, problems, outcome=0):
+        stdout = io.StringIO()
+        with mock.patch.object(realtime, "check_ready", return_value=problems), \
+             mock.patch.object(realtime, "Feedback") as fb, \
+             mock.patch.object(realtime, "RealtimeSession"), \
+             mock.patch.object(realtime, "_run_until_done",
+                               side_effect=outcome if isinstance(outcome, BaseException)
+                               else None, return_value=outcome) as runner, \
+             contextlib.redirect_stdout(stdout):
+            code = realtime.run(Config())
+        return code, stdout.getvalue(), fb, runner
+
+    def test_no_api_key_exits_cleanly_and_says_where_to_put_it(self):
+        code, out, fb, runner = self.run_with(["OPENAI_API_KEY is not set"])
+        self.assertEqual(code, 0)
+        self.assertIn("OPENAI_API_KEY is not set", out)
+        fb.return_value.state.assert_called_once()
+        self.assertEqual(fb.return_value.state.call_args.args[0], "unconfigured")
+        runner.assert_not_called()
+
+    def test_a_hard_problem_fails_the_start(self):
+        code, out, _, runner = self.run_with(["pw-cat is missing (install pipewire-audio)"])
+        self.assertEqual(code, 1)
+        self.assertIn("cannot start realtime engine: pw-cat is missing", out)
+        runner.assert_not_called()
+
+    def test_a_missing_microphone_only_warns(self):
+        code, out, _, runner = self.run_with(
+            ["PipeWire reports no audio input — is a microphone plugged in?"], outcome=0)
+        self.assertEqual(code, 0)
+        self.assertIn("warning: PipeWire reports no audio input", out)
+        runner.assert_called_once()
+
+    def test_an_unavailable_engine_is_reported(self):
+        code, out, _, _ = self.run_with([], outcome=realtime.RealtimeUnavailable("no websockets"))
+        self.assertEqual(code, 1)
+        self.assertIn("cannot start realtime engine: no websockets", out)
+
+    def test_ctrl_c_is_a_clean_exit(self):
+        code, _, _, _ = self.run_with([], outcome=KeyboardInterrupt())
+        self.assertEqual(code, 0)
+
+
+class RunUntilDoneTests(unittest.TestCase):
+    def test_a_stuck_tool_thread_does_not_hold_the_exit(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class Session:
+            async def run(self):
+                # Left running on the default executor, as a stuck tool would be.
+                asyncio.get_running_loop().run_in_executor(None, release.wait, 30)
+                return 3
+
+        started = time.monotonic()
+        self.assertEqual(realtime._run_until_done(Session()), 3)
+        self.assertLess(time.monotonic() - started, 10)
+        with self.assertRaises(RuntimeError):
+            asyncio.get_event_loop_policy().get_event_loop()
+
+
+class SafetyIdentifierTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def identify(self, path):
+        with mock.patch.object(realtime, "SAFETY_ID_FILE", path), \
+             mock.patch.object(realtime, "CONFIG_DIR", path.parent):
+            return realtime._safety_identifier()
+
+    def test_the_secret_is_created_once_and_kept(self):
+        path = self.root / "config" / "safety-id"
+        first = self.identify(path)
+        self.assertEqual(self.identify(path), first)
+        self.assertEqual(len(first), 32)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_an_unreadable_secret_falls_back_to_an_anonymous_id(self):
+        # A directory where the file should be: read_text raises, even as root.
+        path = self.root / "safety-id"
+        path.mkdir()
+        self.assertEqual(self.identify(path), self.identify(path))
