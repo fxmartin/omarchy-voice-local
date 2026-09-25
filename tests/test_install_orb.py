@@ -10,6 +10,9 @@ ROOT = Path(__file__).resolve().parent.parent
 REAL_PYTHON = shutil.which("python3")
 
 
+# install.sh refuses to run as root by design, so these end-to-end runs cannot
+# execute in root CI containers; they still run for every non-root developer.
+@unittest.skipIf(os.geteuid() == 0, "install.sh refuses root; run as a desktop user")
 class InstallOrbTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
