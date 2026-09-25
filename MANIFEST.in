@@ -8,6 +8,7 @@ recursive-include docs *.md
 recursive-include tests *.py
 recursive-include tools *.py
 prune docs/private
+prune docs/stories
 prune benchmarks
 prune .git
 prune .venv
