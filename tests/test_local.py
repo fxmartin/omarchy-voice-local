@@ -264,6 +264,33 @@ class LocalCaptureTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cap.active)
         self.assertTrue(any("pw-record is missing" in line for line in self.feedback.logs))
 
+    async def test_repeated_toggle_keeps_a_single_recorder(self):
+        cap = self.capture()
+        await cap.set_active(True)
+        await cap.set_active(True)
+        self.assertEqual(len(self.procs), 1)
+        await cap.set_active(False)
+        await cap.set_active(False)
+        self.assertEqual(self.procs[0].terminated, 1)
+
+    async def test_default_spawn_pipes_stdout_and_silences_stderr(self):
+        with mock.patch("asyncio.create_subprocess_exec",
+                        new=mock.AsyncMock(return_value="proc")) as spawn:
+            proc = await local.LocalCapture._spawn_recorder(["pw-record", "-"])
+        self.assertEqual(proc, "proc")
+        spawn.assert_awaited_once_with(
+            "pw-record", "-", stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
+
+    async def test_recorder_ending_while_inactive_is_not_an_error(self):
+        cap = self.capture()
+        await cap.set_active(True)
+        cap.active = False
+        self.procs[0].stdout.feed_eof()
+        await self.settle()
+        self.assertFalse(any("unexpectedly" in line for line in self.feedback.logs))
+        await cap.close()
+
 
 if __name__ == "__main__":
     unittest.main()
