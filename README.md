@@ -46,7 +46,7 @@ cd omarchy-voice
 ```
 
 Run the installer as your desktop user. It copies the application and asks before
-adding the bar widget, systemd user service, keybinding, or optional
+adding the bar widget and listening orb, systemd user service, keybinding, or optional
 `omarchy voice` command aliases. It preserves existing configuration and backs up
 keybindings before editing them.
 

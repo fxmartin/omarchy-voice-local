@@ -118,7 +118,7 @@ if ! command -v ffmpeg >/dev/null || ! command -v ffplay >/dev/null; then
 fi
 echo
 step "desktop integration"
-if [[ -d "$HOME/.config/omarchy" ]] && ask "install the bar widget plugin?"; then
+if [[ -d "$HOME/.config/omarchy" ]] && ask "install the bar widget and listening orb plugins?"; then
   mkdir -p "$PLUGINDIR"
   cp -r "$SOURCE/plugin/voice.indicator" "$PLUGINDIR/"
   echo "   installed to $PLUGINDIR"
@@ -127,6 +127,21 @@ if [[ -d "$HOME/.config/omarchy" ]] && ask "install the bar widget plugin?"; the
   else
     warn "could not place it automatically. Add it with:"
     echo "     omarchy bar put voice.indicator --section right"
+  fi
+
+  # The orb sits beside the widget. Restarting the shell makes it see the new
+  # plugin; never omarchy-refresh-shell, which resets shell.json to defaults.
+  cp -r "$SOURCE/plugin/voice.orb" "$PLUGINDIR/"
+  if command -v omarchy >/dev/null && omarchy plugin enable voice.orb >/dev/null 2>&1; then
+    echo "   enabled the listening orb"
+    if command -v omarchy-restart-shell >/dev/null && omarchy-restart-shell >/dev/null 2>&1; then
+      echo "   restarted the shell to load it"
+    else
+      warn "could not restart the shell. Run: omarchy-restart-shell"
+    fi
+  else
+    warn "could not enable the orb automatically. Run:"
+    echo "     omarchy plugin enable voice.orb"
   fi
 fi
 

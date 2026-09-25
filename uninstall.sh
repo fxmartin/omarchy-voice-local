@@ -13,7 +13,9 @@ systemctl --user disable --now omarchy-voice.service 2>/dev/null || true
 "$PREFIX/bin/omarchy-vision" quit 2>/dev/null || true
 rm -f "$HOME/.config/systemd/user/omarchy-voice.service"
 systemctl --user daemon-reload 2>/dev/null || true
-rm -rf "$PREFIX" "$HOME/.config/omarchy/plugins/voice.indicator"
+command -v omarchy >/dev/null && omarchy plugin disable voice.orb >/dev/null 2>&1 || true
+rm -rf "$PREFIX" "$HOME/.config/omarchy/plugins/voice.indicator" \
+  "$HOME/.config/omarchy/plugins/voice.orb"
 rm -f "$BINDIR/omarchy-voice"
 rm -f "$BINDIR/omarchy-vision" "$HOME/.local/share/applications/omarchy-vision.desktop"
 
