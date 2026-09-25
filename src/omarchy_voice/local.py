@@ -9,7 +9,13 @@ from __future__ import annotations
 import asyncio
 import collections
 import ipaddress
+import os
+import shutil
+import subprocess
 import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
@@ -200,6 +206,96 @@ def stt_warnings(config: Config) -> list[str]:
         return [f"[local] stt_url {config.local_stt_url} is not a loopback address; "
                 "audio leaves this machine"]
     return []
+
+
+def ready_problems(config: Config) -> list[str]:
+    """What stands between here and a working local session.
+
+    Unlike the Realtime engine this needs no websockets, and an API key only
+    when the planner is configured to send one.
+    """
+    from .realtime import default_source
+    problems = config_problems(config)
+    key_env = config.local_planner_api_key_env
+    if key_env and not os.environ.get(key_env):
+        problems.append(f"{key_env} is not set (the local planner uses it)")
+    for tool in ("pw-record", "pw-cat"):
+        if not shutil.which(tool):
+            problems.append(f"{tool} is missing (install pipewire-audio)")
+    source = default_source()
+    if not source:
+        problems.append("PipeWire reports no audio input — is a microphone plugged in?")
+    elif source.endswith(".monitor"):
+        problems.append(f"the default input is {source}, which is not a microphone — "
+                        "plug one in, or set `device` in config")
+    return problems
+
+
+def _probe_stt(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/", timeout=2):
+            return True
+    except urllib.error.HTTPError:
+        return True  # it answered, just not with a page
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _service_model() -> str:
+    """The model the whisper-server user service is configured to load, if any."""
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "show", "whisper-server", "-p", "Environment", "--value"],
+            capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for item in out.split():
+        if item.startswith("WHISPER_MODEL="):
+            return item.split("=", 1)[1]
+    return ""
+
+
+def _synthesize(model: str) -> int:
+    """Bytes of audio Piper produces for a short phrase; 0 when it cannot speak."""
+    try:
+        return len(subprocess.run(["piper", "--model", model, "--output-raw"],
+                                  input=b"Test.", capture_output=True, timeout=30).stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+
+
+def setup_checks(config: Config, *, probe_stt=_probe_stt, service_model=_service_model,
+                 which=shutil.which, synthesize=_synthesize) -> list[tuple[bool, str]]:
+    """Doctor's checks of the local engine's two servers, each with its fix."""
+    checks: list[tuple[bool, str]] = []
+    if probe_stt(config.local_stt_url):
+        checks.append((True, f"whisper.cpp server answering at {config.local_stt_url}"))
+    else:
+        checks.append((False, f"whisper.cpp server not answering at {config.local_stt_url} "
+                              "— start it: systemctl --user start whisper-server "
+                              "(setup in docs/local.md)"))
+    model = service_model()
+    if model:
+        checks.append((Path(model).is_file(), f"recognition model {model}"))
+
+    if not which("piper"):
+        checks.append((False, "piper is not installed — uv tool install piper-tts "
+                              "(the Arch `piper` package is an unrelated mouse tool)"))
+    voice = config.local_piper_model
+    if not voice:
+        checks.append((False, "[local] piper_model is unset — see docs/local.md for a voice"))
+        return checks
+    if not Path(voice).is_file():
+        checks.append((False, f"Piper voice not found: {voice}"))
+        return checks
+    if not Path(f"{voice}.json").is_file():
+        checks.append((False, f"Piper voice config missing: {voice}.json"))
+        return checks
+    if which("piper"):
+        spoke = synthesize(voice) > 0
+        checks.append((spoke, f"Piper voice {Path(voice).stem}"
+                              + ("" if spoke else " could not synthesize a test phrase")))
+    return checks
 
 
 def run(config: Config) -> int:
