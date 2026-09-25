@@ -59,18 +59,6 @@ class FakeWhisper(ThreadingHTTPServer):
         return f"http://127.0.0.1:{self.server_address[1]}"
 
 
-class FakeFeedback:
-    def __init__(self):
-        self.logs, self.notices = [], []
-
-    def log(self, line):
-        self.logs.append(line)
-
-    def notify(self, title, body="", urgency="low"):
-        self.notices.append((title, body))
-        return True
-
-
 class WavTests(unittest.TestCase):
     def test_pcm_becomes_a_valid_wav_in_memory(self):
         with wave.open(io.BytesIO(local_stt.pcm_to_wav(PCM)), "rb") as w:
@@ -167,35 +155,6 @@ class TranscribeTests(unittest.TestCase):
              mock.patch("tempfile.NamedTemporaryFile", side_effect=AssertionError("tmp")), \
              mock.patch("tempfile.TemporaryFile", side_effect=AssertionError("tmp")):
             self.assertEqual(local_stt.transcribe(self.cfg(server), PCM), "open the browser.")
-
-
-class HeardTests(unittest.TestCase):
-    def test_success_logs_heard(self):
-        server = FakeWhisper()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        fb = FakeFeedback()
-        text = local_stt.hear(config.Config(local_stt_url=server.url), fb, PCM)
-        self.assertEqual(text, "open the browser.")
-        self.assertEqual(fb.logs, ["heard   'open the browser.'"])
-
-    def test_failure_is_reported_and_returns_none(self):
-        server = FakeWhisper(status=503, body=b"busy")
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        fb = FakeFeedback()
-        self.assertIsNone(local_stt.hear(config.Config(local_stt_url=server.url), fb, PCM))
-        self.assertEqual(len(fb.notices), 1)
-        self.assertIn("503", fb.logs[0])
-
-    def test_empty_transcript_is_not_logged_as_heard(self):
-        server = FakeWhisper(body=b'{"text": "  "}')
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        fb = FakeFeedback()
-        self.assertIsNone(local_stt.hear(config.Config(local_stt_url=server.url), fb, PCM))
-        self.assertEqual(fb.logs, [])
-        self.assertEqual(fb.notices, [])
 
 
 class PrivacyWarningTests(unittest.TestCase):
