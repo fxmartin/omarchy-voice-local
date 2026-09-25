@@ -106,6 +106,18 @@ transcribe_model = "gpt-4o-mini-transcribe"  # user-audio transcripts; "" disabl
 # `none` commits the audio buffer when you toggle listening off, then asks
 # for a response. Toggling off stops the recorder, so nothing is captured.
 
+# Local engine: select with `engine = "local"` under [openai], or
+# `omarchy-voice run --engine local`. Every key is optional; defaults shown.
+# [local]
+# stt_url = "http://127.0.0.1:9000"   # speech-recognition server
+# language = "en"                     # recognition language
+# piper_model = ""                    # path to a Piper voice .onnx file
+# planner_base_url = "http://127.0.0.1:11434/v1"  # OpenAI-compatible server
+# planner_model = "qwen3:8b"
+# planner_api_key_env = ""            # env var holding the key; "" sends none
+# endpoint_silence_ms = 700           # silence that ends an utterance
+# endpoint_min_speech_ms = 250        # shorter speech is discarded as noise
+
 [hands]
 # The shell tool is off by default. On, the model can run arbitrary commands —
 # which is exactly as large a hole as it sounds, on an open microphone.

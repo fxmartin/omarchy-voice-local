@@ -105,6 +105,9 @@ Realtime is the default voice engine. To select Live:
 engine = "live"
 ```
 
+For fully local speech, set `engine = "local"` and configure `[local]` (see
+`share/config.example.toml`), or run `omarchy-voice run --engine local`.
+
 See [Live setup](docs/live.md) for model access, session limits, audio behavior,
 and switching engines. Shell execution is disabled by default. Confirmation
 rules reduce mistakes but do not make desktop automation a sandbox.
