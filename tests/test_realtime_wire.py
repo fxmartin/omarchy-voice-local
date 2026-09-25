@@ -326,6 +326,35 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._status(), "idle")
         await self._finish(session, runner)
 
+    async def test_missing_recorder_fails_loudly_and_leaves_none_running(self):
+        async def stay(ws):
+            pass
+
+        async def missing(*_cmd, **_kw):
+            raise FileNotFoundError("pw-record")
+
+        server = await self._serve([stay])
+        with mock.patch.object(realtime.asyncio, "create_subprocess_exec", missing):
+            session = realtime.RealtimeSession(Config(dry_run=True, notify=False))
+            runner = asyncio.create_task(session.run())
+            await asyncio.wait_for(server.connected[0].wait(), timeout=30)
+            await asyncio.to_thread(session_mod.send_control, "start")
+            code = await asyncio.wait_for(runner, timeout=30)
+        self.assertEqual(code, 1)
+        self.assertEqual(session._recorders, set())
+        self.assertIn("pw-record is missing", (self.root / "session.log").read_text())
+
+    async def test_kill_mic_reaps_recorders_from_every_session(self):
+        session = realtime.RealtimeSession(Config(dry_run=True, notify=False))
+        old, new = FakeRecorder(), FakeRecorder()
+        session._recorders.update({old, new})
+        session._mic = new
+        await session._kill_mic()
+        self.assertIsNone(session._mic)
+        self.assertEqual(session._recorders, set())
+        self.assertIsNotNone(old.returncode)
+        self.assertIsNotNone(new.returncode)
+
     async def test_health_check_gives_up_loudly_when_never_answered(self):
         async def silent(ws):
             await ws.send(json.dumps({"type": "input_audio_buffer.speech_stopped"}))
@@ -337,6 +366,78 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 1)
         self.assertGreaterEqual(server.connections, 2)
         self.assertEqual(self._status(), "error")
+
+
+class TerminateTests(unittest.IsolatedAsyncioTestCase):
+    """`_terminate` must reap or kill a recorder however the child behaves."""
+
+    class Proc:
+        def __init__(self, *, term_error=None, ignores_term=False, kill_error=None):
+            self.term_error, self.ignores_term, self.kill_error = (
+                term_error, ignores_term, kill_error)
+            self.terminated = self.killed = False
+            self._dead = asyncio.Event()
+
+        def terminate(self):
+            self.terminated = True
+            if self.term_error:
+                raise self.term_error
+            if not self.ignores_term:
+                self._dead.set()
+
+        def kill(self):
+            self.killed = True
+            if self.kill_error:
+                raise self.kill_error
+            self._dead.set()
+
+        async def wait(self):
+            await self._dead.wait()
+
+    def _fast_timeouts(self):
+        real_wait_for = asyncio.wait_for
+        return mock.patch.object(
+            realtime.asyncio, "wait_for",
+            lambda coro, timeout: real_wait_for(coro, 0.05))
+
+    async def test_clean_exit_after_sigterm(self):
+        proc = self.Proc()
+        await realtime._terminate(proc)
+        self.assertTrue(proc.terminated)
+        self.assertFalse(proc.killed)
+
+    async def test_already_gone_child_is_not_an_error(self):
+        proc = self.Proc(term_error=ProcessLookupError())
+        await realtime._terminate(proc)
+        self.assertFalse(proc.killed)
+
+    async def test_sigterm_ignoring_child_is_killed(self):
+        proc = self.Proc(ignores_term=True)
+        with self._fast_timeouts():
+            await realtime._terminate(proc)
+        self.assertTrue(proc.killed)
+
+    async def test_child_that_vanishes_before_kill_is_tolerated(self):
+        proc = self.Proc(ignores_term=True, kill_error=ProcessLookupError())
+        with self._fast_timeouts():
+            await realtime._terminate(proc)
+        self.assertTrue(proc.killed)
+
+    async def test_unkillable_child_does_not_hang(self):
+        proc = self.Proc(ignores_term=True)
+        proc.kill = lambda: setattr(proc, "killed", True)  # never actually dies
+        with self._fast_timeouts():
+            await realtime._terminate(proc)
+        self.assertTrue(proc.killed)
+
+    async def test_cancel_mid_wait_kills_the_child(self):
+        proc = self.Proc(ignores_term=True)
+        task = asyncio.create_task(realtime._terminate(proc))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(proc.killed)
 
 
 if __name__ == "__main__":
