@@ -24,6 +24,7 @@ class InstallOrbTests(unittest.TestCase):
         self.log = self.tmp / "calls.log"
         self.fake("hyprctl", "exit 0")
         self.fake("omarchy", 'echo "omarchy $*" >> "$CALLS"')
+        self.fake("omarchy-shell", 'echo "omarchy-shell $*" >> "$CALLS"')
         self.fake("omarchy-restart-shell", 'echo "restart-shell" >> "$CALLS"')
         self.fake("omarchy-refresh-shell", 'echo "refresh-shell" >> "$CALLS"; exit 1')
         self.fake("python3", f'[ "$1 $2" = "-c import websockets" ] && exit 0; exec {REAL_PYTHON} "$@"')
@@ -54,25 +55,30 @@ class InstallOrbTests(unittest.TestCase):
         self.assertTrue((plugins / "voice.orb/manifest.json").is_file())
         self.assertIn("omarchy plugin enable voice.orb", self.calls())
 
-    def test_install_reloads_shell_without_resetting_it(self):
+    def test_install_rescans_plugins_before_enabling_without_resetting_the_shell(self):
+        # A freshly copied plugin is "not known" to the running shell until it
+        # rescans, so enabling first always failed on a real desktop.
         self.install()
         calls = self.calls()
-        self.assertIn("restart-shell", calls)
+        rescan = calls.index("omarchy-shell shell rescanPlugins")
+        self.assertLess(rescan, calls.index("omarchy plugin enable voice.orb"))
+        self.assertNotIn("restart-shell", calls)
         self.assertNotIn("refresh-shell", calls)
 
-    def test_failed_enable_warns_and_skips_restart(self):
-        self.fake("omarchy", 'echo "omarchy $*" >> "$CALLS"; exit 1')
+    def test_failed_enable_tells_user_the_commands(self):
+        self.fake("omarchy", 'echo "omarchy $*" >> "$CALLS"; case "$*" in *enable*) exit 1;; esac')
         result = self.run_script("install.sh", "y\nn\nn\n")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("omarchy plugin enable voice.orb", result.stdout + result.stderr)
-        self.assertNotIn("restart-shell", self.calls())
-
-    def test_failed_restart_tells_user_the_command(self):
-        self.fake("omarchy-restart-shell", "exit 1")
-        result = self.run_script("install.sh", "y\nn\nn\n")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("omarchy-restart-shell", result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        self.assertIn("omarchy-shell shell rescanPlugins", output)
+        self.assertIn("omarchy plugin enable voice.orb", output)
         self.assertNotIn("refresh-shell", self.calls())
+
+    def test_failed_rescan_does_not_abort_the_install(self):
+        self.fake("omarchy-shell", "exit 1")
+        result = self.run_script("install.sh", "y\nn\nn\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("omarchy plugin enable voice.orb", self.calls())
 
     def test_uninstall_without_omarchy_cli_still_removes_orb(self):
         self.install()

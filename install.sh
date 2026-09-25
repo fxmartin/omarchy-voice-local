@@ -129,18 +129,16 @@ if [[ -d "$HOME/.config/omarchy" ]] && ask "install the bar widget and listening
     echo "     omarchy bar put voice.indicator --section right"
   fi
 
-  # The orb sits beside the widget. Restarting the shell makes it see the new
-  # plugin; never omarchy-refresh-shell, which resets shell.json to defaults.
+  # The orb sits beside the widget. The running shell does not know a freshly
+  # copied plugin until it rescans, so rescan first, then enable. Never
+  # omarchy-refresh-shell: it resets shell.json and disables other plugins.
   cp -r "$SOURCE/plugin/voice.orb" "$PLUGINDIR/"
+  command -v omarchy-shell >/dev/null && omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
   if command -v omarchy >/dev/null && omarchy plugin enable voice.orb >/dev/null 2>&1; then
     echo "   enabled the listening orb"
-    if command -v omarchy-restart-shell >/dev/null && omarchy-restart-shell >/dev/null 2>&1; then
-      echo "   restarted the shell to load it"
-    else
-      warn "could not restart the shell. Run: omarchy-restart-shell"
-    fi
   else
     warn "could not enable the orb automatically. Run:"
+    echo "     omarchy-shell shell rescanPlugins"
     echo "     omarchy plugin enable voice.orb"
   fi
 fi
