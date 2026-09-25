@@ -36,6 +36,9 @@ python tools/check_public_files.py --staged
 python -m build
 ```
 
+`scripts/quality-gate.sh` runs the syntax checks, the unit suite, and the
+publication history scan in one step with the locked dependencies.
+
 CI runs the full unit suite on Python 3.11 and 3.14, builds the distribution, and
 checks publication history. Local test sockets must be permitted; a sandbox that
 blocks them can prevent network and control-socket tests from running. Do not
