@@ -112,9 +112,10 @@ transcribe_model = "gpt-4o-mini-transcribe"  # user-audio transcripts; "" disabl
 # stt_url = "http://127.0.0.1:9000"   # speech-recognition server
 # language = "en"                     # recognition language
 # piper_model = ""                    # path to a Piper voice .onnx file
-# planner_base_url = "http://127.0.0.1:11434/v1"  # OpenAI-compatible server
-# planner_model = "qwen3:8b"
-# planner_api_key_env = ""            # env var holding the key; "" sends none
+# planner_base_url = "https://api.openai.com/v1"  # any OpenAI-compatible server,
+#                                     # e.g. "http://127.0.0.1:11434/v1" for Ollama
+# planner_model = "gpt-4.1"
+# planner_api_key_env = "OPENAI_API_KEY"  # env var holding the key; "" sends none
 # history_turns = 10                  # utterances remembered (memory only, not saved)
 # endpoint_silence_ms = 700           # silence that ends an utterance
 # endpoint_min_speech_ms = 250        # shorter speech is discarded as noise

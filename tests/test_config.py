@@ -91,6 +91,14 @@ class LocalEngineConfigTests(unittest.TestCase):
         self.assertEqual(loaded.planner_model, default.planner_model)
         self.assertEqual(loaded.unknown_keys, [])
 
+    def test_local_planner_defaults_to_openai_chat(self):
+        # Speech stays local; the brain starts on OpenAI chat with the existing
+        # key and moves to a local server by changing these keys only.
+        default = cfg.Config()
+        self.assertEqual(default.local_planner_base_url, "https://api.openai.com/v1")
+        self.assertEqual(default.local_planner_model, default.planner_model)
+        self.assertEqual(default.local_planner_api_key_env, default.api_key_env)
+
     def test_engine_local_is_selectable_and_flag_overrides(self):
         self.assertEqual(self.load('[openai]\nengine = "local"\n').engine, "local")
         with tempfile.TemporaryDirectory() as tmp:

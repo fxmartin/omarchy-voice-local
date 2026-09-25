@@ -207,9 +207,12 @@ class Config:
     local_stt_url: str = "http://127.0.0.1:9000"  # speech-recognition server
     local_language: str = "en"  # recognition language
     local_piper_model: str = ""  # path to a Piper voice .onnx; empty = unset
-    local_planner_base_url: str = "http://127.0.0.1:11434/v1"  # OpenAI-compatible
-    local_planner_model: str = "qwen3:8b"
-    local_planner_api_key_env: str = ""  # local servers usually need no key
+    # The brain starts on OpenAI chat; point these at any OpenAI-compatible
+    # server (llama.cpp, Ollama) to move it local. An empty key variable sends
+    # no Authorization header, which local servers usually want.
+    local_planner_base_url: str = "https://api.openai.com/v1"
+    local_planner_model: str = "gpt-4.1"
+    local_planner_api_key_env: str = "OPENAI_API_KEY"
     # Earlier utterances the planner remembers, oldest dropped first. Held in
     # memory for the session only; 0 turns memory off.
     local_history_turns: int = 10
