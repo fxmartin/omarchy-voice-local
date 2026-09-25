@@ -79,6 +79,7 @@
 #### Stories
 
 ##### Story 2.2-001: Recover from network drops without leaving the microphone open
+**Status**: Done
 **User Story**: As a user, I want the Realtime engine to recover or say so after a network drop so that it never sits silent with a recorder still running.
 **Priority**: P0
 **Story Points**: 5
@@ -100,6 +101,7 @@
 **Risk Level**: High
 
 ##### Story 2.2-002: Install and enable the orb overlay
+**Status**: Done
 **User Story**: As a user, I want the installer to set up the listening orb so that I see it without copying plugin files by hand.
 **Priority**: P2
 **Story Points**: 2

@@ -16,6 +16,7 @@
 #### Stories
 
 ##### Story 1.1-001: Select the local engine and its configuration
+**Status**: Done
 **User Story**: As a user, I want to choose `engine = "local"` in my config so that I can switch between cloud and local speech without touching code.
 **Priority**: P0
 **Story Points**: 3
@@ -37,6 +38,7 @@
 **Risk Level**: Low
 
 ##### Story 1.1-002: Planner with a configurable endpoint and conversation memory
+**Status**: Done
 **User Story**: As a user, I want the local engine's brain to remember the conversation and talk to any OpenAI-compatible endpoint so that follow-ups work and a local model can replace the cloud one later.
 **Priority**: P0
 **Story Points**: 3
@@ -62,6 +64,7 @@
 #### Stories
 
 ##### Story 1.2-001: Local microphone capture and endpointing
+**Status**: Done
 **User Story**: As a user, I want the local engine to notice when I start and stop speaking so that each command is transcribed as one utterance without pressing anything.
 **Priority**: P0
 **Story Points**: 5
@@ -84,6 +87,7 @@
 **Risk Level**: Medium
 
 ##### Story 1.2-002: whisper.cpp speech recognition client
+**Status**: Done
 **User Story**: As a user, I want my utterances transcribed by a whisper.cpp server on my own machine so that my voice never leaves it.
 **Priority**: P0
 **Story Points**: 3
@@ -105,6 +109,7 @@
 **Risk Level**: Low
 
 ##### Story 1.2-003: whisper.cpp server setup with GPU acceleration
+**Status**: Done
 **User Story**: As a user, I want a documented, checked setup for the whisper.cpp server so that recognition is fast enough to feel like a conversation.
 **Priority**: P1
 **Story Points**: 3
@@ -129,6 +134,7 @@
 #### Stories
 
 ##### Story 1.3-001: Streaming Piper speech through PipeWire
+**Status**: Done
 **User Story**: As a user, I want replies spoken by a local Piper voice as soon as the first sentence is ready so that the assistant answers without cloud speech.
 **Priority**: P0
 **Story Points**: 5
@@ -150,6 +156,7 @@
 **Risk Level**: Medium
 
 ##### Story 1.3-002: Piper voice setup and checks
+**Status**: Done
 **User Story**: As a user, I want the setup to tell me which Piper voice to install and where so that speech works on the first try.
 **Priority**: P1
 **Story Points**: 2
@@ -173,6 +180,7 @@
 #### Stories
 
 ##### Story 1.4-001: Local engine session loop
+**Status**: Done
 **User Story**: As a user, I want to toggle listening, speak a command, and have the local engine act and answer so that it works like the cloud engines from the keyboard, bar, and orb.
 **Priority**: P0
 **Story Points**: 5
@@ -195,6 +203,7 @@
 **Risk Level**: Medium
 
 ##### Story 1.4-002: Failure handling and privacy guarantees
+**Status**: Done
 **User Story**: As a user, I want the local engine to degrade clearly when one part fails so that I am never left talking to a silent assistant or an open microphone.
 **Priority**: P0
 **Story Points**: 3
@@ -216,6 +225,7 @@
 **Risk Level**: Medium
 
 ##### Story 1.4-003: Local engine guide and engine switching docs
+**Status**: Done
 **User Story**: As a user, I want one guide for setting up and switching to the local engine so that I can move between cloud and local speech with confidence.
 **Priority**: P1
 **Story Points**: 2
