@@ -19,9 +19,16 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ping_waits_for_matching_pong(self):
         monitor = self.monitor()
-        pong = asyncio.get_running_loop().create_future()
-        ws = mock.Mock(ping=mock.AsyncMock(return_value=pong), transport=None)
-        asyncio.get_running_loop().call_later(.02, pong.set_result, None)
+        loop = asyncio.get_running_loop()
+        pong = loop.create_future()
+
+        async def ping():
+            # Start the 20 ms delay when the probe sends its ping, not during
+            # test setup: on a busy CI host setup alone took long enough that
+            # the measured round trip came out under the 15 ms floor.
+            loop.call_later(.02, pong.set_result, None)
+            return pong
+        ws = mock.Mock(ping=ping, transport=None)
         await monitor.probe(ws)
         event = monitor.emit.call_args.kwargs
         self.assertGreaterEqual(event['rtt_ms'], 15)
