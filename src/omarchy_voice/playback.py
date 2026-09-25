@@ -195,6 +195,9 @@ class LiveSpeaker:
             self._envelope.popleft()
         return self._envelope[0][2] if self._envelope and self._envelope[0][0] <= now else 0.0
 
+    def queued_seconds(self):
+        return len(self._pcm) / (self.rate * 2)
+
     def is_playing(self, tail=0):
         return time.monotonic() < self._plays_until + tail
 
