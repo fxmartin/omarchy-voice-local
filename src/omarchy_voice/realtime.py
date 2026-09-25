@@ -82,6 +82,11 @@ RECONNECT_MAX_DELAY = 30.0
 # not a failed reconnect and must not spend the budget above. Comfortably under
 # the server's own 60-minute session cap, and comfortably over a flap.
 RECONNECT_HEALTHY_SECONDS = 60.0
+# A live socket is not a working session: after a network stall a reconnected
+# session can accept audio, transcribe it, and never answer. Once the user's
+# turn has ended (or a response was requested) the server must start a response
+# within this long, or the connection is treated as dead and rebuilt.
+RESPONSE_TIMEOUT_SECONDS = 20.0
 
 
 def frame_level(chunk: bytes) -> float:
@@ -418,6 +423,11 @@ class RealtimeSession:
         self._active_event = asyncio.Event()
         self._stop = asyncio.Event()
         self._mic: asyncio.subprocess.Process | None = None
+        # Every recorder ever spawned and not yet reaped. `_mic` only names the
+        # latest one; this is what guarantees none outlives its session.
+        self._recorders: set[asyncio.subprocess.Process] = set()
+        self._response_watchdog: asyncio.TimerHandle | None = None
+        self._gave_up = False
         self._transcript = ""
         self._state_refreshed = 0.0
         self._refreshing = False
@@ -465,6 +475,8 @@ class RealtimeSession:
         async with self._send_lock:
             try:
                 await self.ws.send(json.dumps(payload))
+                if payload.get("type") == "response.create":
+                    self._arm_response_watchdog()
             except Exception as exc:  # a dead socket ends the session, not this call
                 self.feedback.log(f"error   send failed: {type(exc).__name__}: {exc}")
                 # Not a clean stop: the socket died under us. Distinguished from
@@ -473,6 +485,27 @@ class RealtimeSession:
                 self._dropped = True
                 self._exit_code = 1
                 self._stop.set()
+
+    # -- response watchdog --------------------------------------------------
+    def _arm_response_watchdog(self) -> None:
+        self._disarm_response_watchdog()
+        if self.loop is not None:
+            self._response_watchdog = self.loop.call_later(
+                RESPONSE_TIMEOUT_SECONDS, self._on_response_timeout)
+
+    def _disarm_response_watchdog(self) -> None:
+        if self._response_watchdog is not None:
+            self._response_watchdog.cancel()
+            self._response_watchdog = None
+
+    def _on_response_timeout(self) -> None:
+        """The socket is up but the session is not answering: rebuild it."""
+        self._response_watchdog = None
+        self.feedback.log(f"error   no response within {RESPONSE_TIMEOUT_SECONDS:.0f}s "
+                          "— reconnecting")
+        self._dropped = True
+        self._exit_code = 1
+        self._stop.set()
 
     # -- session configuration ----------------------------------------------
     async def _instructions(self) -> str:
@@ -686,20 +719,24 @@ class RealtimeSession:
                 cmd += ["--target", self.config.device]
             cmd.append("-")
             try:
-                self._mic = await asyncio.create_subprocess_exec(
+                proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL)
+                self._mic = proc
+                self._recorders.add(proc)
             except FileNotFoundError:
                 self.feedback.log("error   pw-record is missing — install pipewire-audio")
                 self._stop.set()
                 self._exit_code = 1
                 return
 
-            await self._send({"type": "input_audio_buffer.clear"})
-            self.feedback.log("mic     capturing")
-            stdout = self._mic.stdout
+            stdout = proc.stdout
             assert stdout is not None
             try:
+                # Inside the try: a drop or cancellation here used to skip the
+                # cleanup below and leave this recorder running.
+                await self._send({"type": "input_audio_buffer.clear"})
+                self.feedback.log("mic     capturing")
                 while self._active_event.is_set() and not self._stop.is_set():
                     chunk = await stdout.read(FRAME_BYTES)
                     if not chunk:
@@ -750,16 +787,25 @@ class RealtimeSession:
                         "audio": base64.b64encode(chunk).decode(),
                     })
             finally:
-                await self._kill_mic()
+                await self._reap(proc)
                 # Leave the meter at rest, or the orb keeps the last loud frame.
                 self.feedback.level(0.0)
                 self.feedback.log("mic     stopped")
 
+    async def _reap(self, proc: asyncio.subprocess.Process) -> None:
+        if self._mic is proc:
+            self._mic = None
+        try:
+            if proc.returncode is None:
+                await _terminate(proc)
+        finally:
+            self._recorders.discard(proc)
+
     async def _kill_mic(self) -> None:
-        proc, self._mic = self._mic, None
-        if proc is None or proc.returncode is not None:
-            return
-        await _terminate(proc)
+        """Stop every recorder from any session, not just the latest."""
+        self._mic = None
+        for proc in list(self._recorders):
+            await self._reap(proc)
 
     # -- control socket -----------------------------------------------------
     def _control(self, command: str) -> str:
@@ -863,6 +909,7 @@ class RealtimeSession:
         if kind == "session.created":
             self.feedback.log(f"start   realtime session {event.get('session', {}).get('id', '?')}")
         elif kind == "input_audio_buffer.speech_started":
+            self._disarm_response_watchdog()
             self.feedback.state("listening")
             self._user_turn_since_hold = True
             # A new instruction earns a fresh budget of tool rounds.
@@ -872,6 +919,7 @@ class RealtimeSession:
             self._kick_refresh()
         elif kind == "input_audio_buffer.speech_stopped":
             self.feedback.state("thinking")
+            self._arm_response_watchdog()
         elif kind == "response.output_audio.delta":
             await self._on_audio_delta(event)
         elif kind == "response.output_audio_transcript.delta":
@@ -900,8 +948,10 @@ class RealtimeSession:
                     f"/{limit.get('limit')} left, resets in {limit.get('reset_seconds')}s")
         elif kind == "response.created":
             self._response_running = True
+            self._disarm_response_watchdog()
         elif kind == "response.done":
             self._response_running = False
+            self._disarm_response_watchdog()
             # Audio is measured per item; a finished response must not leave
             # its byte count to be charged against the next one.
             self._audio_item_id = None
@@ -1167,7 +1217,8 @@ class RealtimeSession:
             await self._kill_mic()
             await self.speaker.close()
             await asyncio.to_thread(control.stop)
-            self.feedback.state("idle")
+            if not self._gave_up:
+                self.feedback.state("idle")
             self.ws = None
         return 0 if self._user_quit else self._exit_code
 
@@ -1235,6 +1286,8 @@ class RealtimeSession:
                                      "Lost the connection and could not get it back.",
                                      urgency="normal")
                 self._exit_code = 1
+                self._gave_up = True
+                self.feedback.state("error", "lost the connection")
                 return
             was_listening, self.active = self.active, False
             self._active_event.clear()
@@ -1286,9 +1339,14 @@ class RealtimeSession:
                         self._dropped = True
                         self.feedback.log("stop    the server closed the connection")
         finally:
+            self._disarm_response_watchdog()
             if mic_task is not None:
                 mic_task.cancel()
+                # Let its cleanup finish so the recorder is gone before any
+                # reconnect, and a late "mic stopped" cannot hit the next one.
+                await asyncio.gather(mic_task, return_exceptions=True)
             await self._kill_mic()
+            await self.speaker.interrupt()
             self.ws = None
             await asyncio.to_thread(self.executor.vision.stop_owned)
 
@@ -1342,6 +1400,11 @@ async def _terminate(proc: asyncio.subprocess.Process) -> None:
         return
     except (asyncio.TimeoutError, TimeoutError):
         pass
+    except asyncio.CancelledError:
+        # Cancelled mid-wait must not leave a SIGTERM-ignoring child behind.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        raise
     try:
         proc.kill()
     except ProcessLookupError:
