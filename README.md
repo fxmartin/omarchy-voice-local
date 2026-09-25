@@ -98,21 +98,20 @@ The Python application honors `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
 service use the standard home-directory paths shown here. Custom XDG layouts or
 an alternate install `PREFIX` need corresponding service/configuration changes.
 
-Realtime is the default voice engine. To select Live:
+Three voice engines are available. Realtime is the default.
+
+| Engine | Speech | Guide |
+| --- | --- | --- |
+| `realtime` | OpenAI speech to speech; room audio streams while listening | this README |
+| `live` | OpenAI Live voice with a separate tool model | [Live setup](docs/live.md) |
+| `local` | whisper.cpp and Piper on your machine; only text reaches the planner | [Local engine](docs/local.md) |
+
+Select one in `~/.config/omarchy-voice/config.toml`, then restart the service:
 
 ```toml
 [openai]
-engine = "live"
+engine = "local"
 ```
-
-For fully local speech, set `engine = "local"` and configure `[local]` (see
-`share/config.example.toml`), or run `omarchy-voice run --engine local`.
-Recognition uses a whisper.cpp server at `[local] stt_url` (loopback by
-default, so audio stays on your machine); `omarchy-voice doctor` warns if you
-point it at another address.
-Local replies are spoken sentence by sentence by Piper through PipeWire; set
-`piper_model` to a voice `.onnx` file. If `piper` or the voice is missing, the
-reply is shown as a notification instead and the failure is logged once.
 
 See [Live setup](docs/live.md) for model access, session limits, audio behavior,
 and switching engines. Shell execution is disabled by default. Confirmation
@@ -127,6 +126,7 @@ interruptions; an [example configuration](share/echo-cancel.conf) is included.
 | Guide | Contents |
 | --- | --- |
 | [Live backend](docs/live.md) | Setup, usage controls, browser delegation, recovery |
+| [Local engine](docs/local.md) | whisper.cpp and Piper setup, model choice, privacy, limits |
 | [Task workers](docs/task-workers.md) | Submit, inspect, cancel, and resume durable work |
 | [OMA Vision](docs/vision.md) | Camera setup, model switching, crop, privacy, and latency |
 | [Diagnostics](docs/diagnostics.md) | Troubleshooting, latency, and private logs |
