@@ -210,6 +210,9 @@ class Config:
     local_planner_base_url: str = "http://127.0.0.1:11434/v1"  # OpenAI-compatible
     local_planner_model: str = "qwen3:8b"
     local_planner_api_key_env: str = ""  # local servers usually need no key
+    # Earlier utterances the planner remembers, oldest dropped first. Held in
+    # memory for the session only; 0 turns memory off.
+    local_history_turns: int = 10
     # Endpointing: an utterance ends after this much silence, and speech
     # shorter than the minimum is discarded as noise.
     local_endpoint_silence_ms: int = 700

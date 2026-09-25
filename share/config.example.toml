@@ -115,6 +115,7 @@ transcribe_model = "gpt-4o-mini-transcribe"  # user-audio transcripts; "" disabl
 # planner_base_url = "http://127.0.0.1:11434/v1"  # OpenAI-compatible server
 # planner_model = "qwen3:8b"
 # planner_api_key_env = ""            # env var holding the key; "" sends none
+# history_turns = 10                  # utterances remembered (memory only, not saved)
 # endpoint_silence_ms = 700           # silence that ends an utterance
 # endpoint_min_speech_ms = 250        # shorter speech is discarded as noise
 
