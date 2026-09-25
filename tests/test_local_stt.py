@@ -137,6 +137,25 @@ class TranscribeTests(unittest.TestCase):
             local_stt.transcribe(cfg, PCM)
         self.assertIn("unreachable", str(ctx.exception))
 
+    def test_json_that_is_not_an_object_raises(self):
+        server = self.serve(body=b'["text"]')
+        with self.assertRaises(local_stt.SttError) as ctx:
+            local_stt.transcribe(self.cfg(server), PCM)
+        self.assertIn("unreadable", str(ctx.exception))
+
+    def test_reply_without_text_raises(self):
+        server = self.serve(body=b'{"other": 1}')
+        with self.assertRaises(local_stt.SttError) as ctx:
+            local_stt.transcribe(self.cfg(server), PCM)
+        self.assertIn("no transcript", str(ctx.exception))
+
+    def test_timeout_wrapped_in_urlerror_reads_as_timeout(self):
+        wrapped = local_stt.urllib.error.URLError(TimeoutError("slow"))
+        with mock.patch("urllib.request.urlopen", side_effect=wrapped):
+            with self.assertRaises(local_stt.SttError) as ctx:
+                local_stt.transcribe(config.Config(local_stt_url="http://127.0.0.1:1"), PCM)
+        self.assertIn("timed out", str(ctx.exception))
+
     def test_non_http_scheme_is_refused(self):
         cfg = config.Config(engine="local", local_stt_url="file:///etc/passwd")
         with self.assertRaises(local_stt.SttError):
