@@ -111,6 +111,7 @@ class LocalEngineConfigTests(unittest.TestCase):
         text = (Path(__file__).resolve().parent.parent / "share/config.example.toml").read_text()
         uncommented = text.replace("# stt_url", "stt_url").replace("# [local]", "[local]")
         for key in ("language", "piper_model", "planner_base_url", "planner_model",
-                    "planner_api_key_env", "endpoint_silence_ms", "endpoint_min_speech_ms"):
+                    "planner_api_key_env", "endpoint_silence_ms", "endpoint_min_speech_ms",
+                    "endpoint_max_speech_ms", "endpoint_preroll_ms"):
             uncommented = uncommented.replace(f"# {key} =", f"{key} =")
         self.assertEqual(self.load(uncommented).unknown_keys, [])
