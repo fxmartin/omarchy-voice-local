@@ -83,21 +83,3 @@ def transcribe(config: Config, pcm: bytes) -> str:
     if not isinstance(text, str):
         raise SttError("recognition server sent no transcript")
     return text.strip()
-
-
-def hear(config: Config, feedback, pcm: bytes) -> str | None:
-    """Transcribe one utterance and log it as "heard".
-
-    Returns None when nothing usable came back. A failure is reported briefly
-    and never raised, so the caller keeps listening.
-    """
-    try:
-        text = transcribe(config, pcm)
-    except SttError as exc:
-        feedback.log(f"error   speech recognition: {exc}")
-        feedback.notify("Voice", f"Could not transcribe that: {exc}")
-        return None
-    if not text:
-        return None
-    feedback.log(f"heard   {text!r}")
-    return text

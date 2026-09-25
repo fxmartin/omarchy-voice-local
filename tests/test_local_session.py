@@ -133,6 +133,7 @@ class UtteranceTests(unittest.TestCase):
         self.assertLess(statuses.index("thinking"), len(statuses) - 1)
         self.assertEqual(statuses[-1], "listening")
         self.assertTrue(any(line.startswith("reply") for line in feedback.lines))
+        self.assertIn("heard   'go to workspace two'", feedback.lines)
 
     def test_nothing_recognised_goes_back_to_listening(self):
         session, feedback, _, planner = make(transcript=None)
@@ -144,6 +145,7 @@ class UtteranceTests(unittest.TestCase):
         self.assertEqual(planner.heard, [])
         self.assertEqual(session.speaker.said, [])
         self.assertEqual(feedback.states[-1][0], "listening")
+        self.assertFalse(any(line.startswith("heard") for line in feedback.lines))
 
     def test_utterance_overlapping_her_speech_is_dropped(self):
         session, _, _, planner = make()
@@ -279,6 +281,170 @@ class AnnouncementTests(unittest.TestCase):
         run(session.announce(self.JOB))
         self.assertEqual(session.speaker.said, [])
         self.assertIn("the build finished", feedback.notes[-1][1])
+
+
+class FailureTests(unittest.TestCase):
+    """Each stage can fail on its own; the session says which and keeps going."""
+
+    def quick(self, session):
+        session.error_hold = 0.0
+        return session
+
+    def test_recognition_failure_is_named_and_listening_resumes(self):
+        session, feedback, _, planner = make()
+        self.quick(session)
+
+        def broken(pcm):
+            raise RuntimeError("recognition server unreachable")
+        session.transcribe = broken
+
+        async def go():
+            await session.set_active(True)
+            await session.handle_utterance(ONE_SECOND)
+            await asyncio.sleep(0.01)
+        run(go())
+        self.assertEqual(planner.heard, [])
+        self.assertIn(("error", "speech recognition failed"), feedback.states)
+        self.assertIn("speech recognition", feedback.notes[-1][1])
+        self.assertEqual(feedback.states[-1][0], "listening")
+
+    def test_planning_failure_is_named_and_spoken(self):
+        session, feedback, _, _ = make(reply="Something went wrong with that.",
+                                       error="planner HTTP 500: boom")
+        self.quick(session)
+
+        async def go():
+            await session.set_active(True)
+            await session.handle_utterance(ONE_SECOND)
+            await asyncio.sleep(0.01)
+        run(go())
+        self.assertIn(("error", "planning failed"), feedback.states)
+        self.assertEqual(session.speaker.said, ["Something went wrong with that."])
+        self.assertEqual(feedback.states[-1][0], "listening")
+
+    def test_a_crashing_turn_does_not_stop_the_next_one(self):
+        session, feedback, _, planner = make()
+        self.quick(session)
+        calls = []
+
+        def flaky(text):
+            calls.append(text)
+            if len(calls) == 1:
+                raise ValueError("unexpected")
+            return FakePlanner.think(planner, text)
+        planner.think = flaky
+
+        async def go():
+            await session.set_active(True)
+            runner = asyncio.create_task(session._turn_loop())
+            session._queue_utterance(ONE_SECOND)
+            session._queue_utterance(ONE_SECOND)
+            for _ in range(200):
+                if len(calls) == 2 and session.speaker.said:
+                    break
+                await asyncio.sleep(0.01)
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+        run(go())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(session.speaker.said, ["Done."])
+        self.assertTrue(any("ValueError" in line for line in feedback.lines))
+
+    def test_network_drop_only_fails_the_planning_turn(self):
+        session, feedback, _, planner = make()
+        self.quick(session)
+        outcomes = iter([("", "could not reach the planner: timed out"), ("Done.", "")])
+
+        def think(text):
+            reply, error = next(outcomes)
+            planner.heard.append(text)
+            return Turn(text=text, reply=reply or "Something went wrong with that.", error=error)
+        planner.think = think
+
+        async def go():
+            await session.set_active(True)
+            await session.handle_utterance(ONE_SECOND)
+            await session.handle_utterance(ONE_SECOND)
+        run(go())
+        self.assertEqual(len(planner.heard), 2)  # recognition kept working
+        self.assertEqual(session.speaker.said[-1], "Done.")
+
+    def test_audio_is_never_logged(self):
+        session, feedback, _, _ = make()
+
+        async def go():
+            await session.set_active(True)
+            await session.handle_utterance(b"\x01\x02" * 16000)
+        run(go())
+        self.assertFalse(any("\\x01" in line or "\x01" in line for line in feedback.lines))
+
+
+class FakeProc:
+    """Stands in for pw-record: a stream nobody feeds, ended by terminate()."""
+
+    def __init__(self):
+        self.stdout = asyncio.StreamReader()
+        self.returncode = None
+
+    def terminate(self):
+        self.returncode = -15
+        self.stdout.feed_eof()
+
+    def kill(self):
+        self.returncode = -9
+        self.stdout.feed_eof()
+
+    async def wait(self):
+        return self.returncode
+
+
+class RecorderLifetimeTests(unittest.TestCase):
+    """No recorder process outlives the session, however it ends."""
+
+    def session_with_real_capture(self):
+        from omarchy_voice.local import LocalCapture
+        procs = []
+
+        async def spawn(cmd):
+            procs.append(FakeProc())
+            return procs[-1]
+        session, feedback, _, _ = make()
+        session.capture = LocalCapture(Config(engine="local"), feedback,
+                                       session._queue_utterance, spawn=spawn)
+        return session, procs
+
+    def test_quit_while_listening_stops_the_recorder(self):
+        session, procs = self.session_with_real_capture()
+
+        async def go():
+            runner = asyncio.create_task(session.serve(start_control=False))
+            await asyncio.sleep(0)
+            await session.control_async("start")
+            self.assertIsNone(procs[0].returncode)
+            await session.control_async("quit")
+            await asyncio.wait_for(runner, 5)
+        run(go())
+        self.assertEqual(len(procs), 1)
+        self.assertIsNotNone(procs[0].returncode)
+
+    def test_recorder_stops_even_after_a_turn_crashed(self):
+        session, procs = self.session_with_real_capture()
+        session.error_hold = 0.0
+
+        def broken(pcm):
+            raise RuntimeError("boom")
+        session.transcribe = broken
+
+        async def go():
+            runner = asyncio.create_task(session.serve(start_control=False))
+            await asyncio.sleep(0)
+            await session.control_async("start")
+            session._queue_utterance(ONE_SECOND)
+            await asyncio.sleep(0.05)
+            await session.control_async("quit")
+            await asyncio.wait_for(runner, 5)
+        run(go())
+        self.assertIsNotNone(procs[0].returncode)
 
 
 if __name__ == "__main__":

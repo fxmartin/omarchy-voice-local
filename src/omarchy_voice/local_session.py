@@ -26,6 +26,8 @@ _BYTES_PER_SECOND = 16000 * 2
 _ECHO_TAIL_SECONDS = 0.3
 _METER_INTERVAL = 0.05
 _WATCH_POLL_SECONDS = 5.0
+# How long the bar and orb show an error before returning to listening.
+ERROR_HOLD_SECONDS = 2.0
 
 
 class _CaptureMeter:
@@ -77,9 +79,11 @@ class LocalSession:
                                    on_utterance=self._queue_utterance)
         self.capture = capture
         if transcribe is None:
-            from .local_stt import hear
-            transcribe = lambda pcm: hear(config, feedback, pcm)  # noqa: E731
+            from .local_stt import transcribe as whisper
+            transcribe = lambda pcm: whisper(config, pcm)  # noqa: E731
+        # Raises on failure, so the session can say which stage failed.
         self.transcribe = transcribe
+        self.error_hold = ERROR_HOLD_SECONDS
 
         # Always starts muted; only the toggle opens the microphone.
         self.active = False
@@ -116,6 +120,19 @@ class LocalSession:
     def _queue_utterance(self, pcm: bytes) -> None:
         self._utterances.put_nowait(pcm)
 
+    def _failed(self, stage: str, detail: str) -> None:
+        """Say which stage failed, show it briefly, then go back to resting.
+
+        Never raises and never stops listening: one bad turn is one bad turn.
+        """
+        self.feedback.log(f"error   {stage}: {detail}")
+        self.feedback.state("error", f"{stage} failed")
+        self.feedback.notify("Voice", f"{stage} failed: {detail}")
+        if self.error_hold > 0 and self.loop is not None:
+            self.loop.call_later(self.error_hold, self._resting_state)
+        else:
+            self._resting_state()
+
     # -- the microphone gate --------------------------------------------------
     async def set_active(self, active: bool) -> str:
         self.active = active
@@ -144,10 +161,16 @@ class LocalSession:
                 return
             await self.speaker.stop()
         self.feedback.state("thinking")
-        text = await asyncio.to_thread(self.transcribe, pcm)
+        try:
+            text = await asyncio.to_thread(self.transcribe, pcm)
+        except Exception as exc:
+            self._failed("speech recognition", str(exc) or type(exc).__name__)
+            return
+        text = (text or "").strip()
         if not text:
             self._resting_state()
             return
+        self.feedback.log(f"heard   {text!r}")
         await self.handle_text(text)
 
     async def handle_text(self, text: str) -> None:
@@ -162,14 +185,17 @@ class LocalSession:
                     return
             self.feedback.state("thinking")
             turn = await asyncio.to_thread(self.planner.think, text)
-            if turn.error:
-                self.feedback.log(f"error   {turn.error}")
             if self.executor.pending:
                 held = self.executor.describe(*self.executor.pending)
                 phrase = self.config.confirm_words[0] if self.config.confirm_words else "confirm"
                 self._say(f"{turn.reply} Say {phrase} to run {held}, or cancel.")
             elif turn.reply:
                 self._say(turn.reply)
+            if turn.error:
+                # A network drop lands here: only this turn's planning failed,
+                # and recognition and speech keep working for the next one.
+                self._failed("planning", turn.error)
+                return
             self._resting_state()
 
     async def _release(self, why: str) -> str:
@@ -239,7 +265,12 @@ class LocalSession:
             pcm = await self._utterances.get()
             if not self.active:
                 continue
-            await self.handle_utterance(pcm)
+            try:
+                await self.handle_utterance(pcm)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # one broken turn must not end listening
+                self._failed("that turn", f"{type(exc).__name__}: {exc}")
 
     # -- control socket -------------------------------------------------------------
     async def control_async(self, command: str) -> str:
