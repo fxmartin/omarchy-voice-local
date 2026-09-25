@@ -324,10 +324,18 @@ class VerifiedWebappTests(unittest.TestCase):
                              ['systemd-run', '--user', '--collect', '--quiet', '--service-type=exec',
                               '--', 'google-chrome-stable', '--app=https://x.com/'])
 
-    def test_other_default_browsers_keep_omarchy_launcher(self):
+    def test_other_default_browsers_keep_omarchy_launcher_outside_the_sandbox(self):
+        # Omarchy's webapp launcher runs uwsm-app, whose scope keeps the caller's
+        # namespace. Started straight from the daemon, the browser inherited its
+        # private /tmp, missed the running browser's singleton socket, and opened
+        # a second instance on the same profile that crashed on the GPU cache.
         ex = Executor(Config())
-        with mock.patch('omarchy_voice.tools.subprocess.run', return_value=mock.Mock(stdout='brave-browser.desktop\n')):
-            self.assertEqual(ex._webapp_command('https://x.com/'), ['omarchy', 'launch', 'webapp', 'https://x.com/'])
+        for default in ('chromium.desktop\n', 'brave-browser.desktop\n'):
+            with self.subTest(default=default.strip()), \
+                 mock.patch('omarchy_voice.tools.subprocess.run', return_value=mock.Mock(stdout=default)):
+                self.assertEqual(ex._webapp_command('https://x.com/'),
+                                 ['systemd-run', '--user', '--collect', '--quiet', '--service-type=exec',
+                                  '--', 'omarchy', 'launch', 'webapp', 'https://x.com/'])
 
     def test_research_window_has_an_address_bar(self):
         ex = Executor(Config())

@@ -363,6 +363,15 @@ def _pane_hint(kind: str, target: str, name: str) -> str:
     return ""  # a terminal has no distinguishing mark worth guessing at
 
 
+# Starts a command as a transient service of the desktop's user manager, outside
+# OMA's PrivateTmp and read-only namespace. A browser must see the normal /tmp to
+# find the running browser's singleton socket; started from inside, it opened a
+# second instance on the same profile, which crashed on the shared GPU cache.
+# Launchers that only create a systemd *scope* (uwsm-app, so `omarchy launch
+# webapp`) do not escape: a scope keeps the caller's namespace.
+USER_MANAGER = ["systemd-run", "--user", "--collect", "--quiet", "--service-type=exec", "--"]
+
+
 def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
     """The argv that opens one pane, or None if the kind/target do not fit.
 
@@ -374,7 +383,7 @@ def _pane_command(kind: str, target: str, name: str) -> list[str] | None:
     if kind == "web":
         if urlparse(target).scheme.lower() not in ("http", "https"):
             return None
-        return ["omarchy", "launch", "webapp", target]
+        return [*USER_MANAGER, "omarchy", "launch", "webapp", target]
     if kind == "terminal":
         return ["omarchy", "launch", "terminal", *shlex.split(target)] if target \
             else ["omarchy", "launch", "terminal"]
@@ -2832,11 +2841,12 @@ class Executor:
         except (OSError, subprocess.TimeoutExpired):
             default = ""
         if default == "google-chrome.desktop" and shutil.which("google-chrome-stable"):
-            return ["systemd-run", "--user", "--collect", "--quiet", "--service-type=exec",
-                    "--", "google-chrome-stable", *(["--new-window", url] if research else ["--app=" + url])]
+            return [*USER_MANAGER, "google-chrome-stable",
+                    *(["--new-window", url] if research else ["--app=" + url])]
         if research:
+            # Already starts the browser through systemd-run itself.
             return ["omarchy", "launch", "browser", "--new-window", url]
-        return ["omarchy", "launch", "webapp", url]
+        return [*USER_MANAGER, "omarchy", "launch", "webapp", url]
 
     def _open_web_window(self, url: str, hint: str,
                          timeout: float = WEB_WINDOW_TIMEOUT, *, research: bool = False) -> tuple[dict | None, str]:

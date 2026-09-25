@@ -52,7 +52,8 @@ class PaneCommandTests(unittest.TestCase):
         self.assertIsNone(_pane_command("web", "file:///etc/passwd", ""))
         self.assertIsNone(_pane_command("web", "news.ycombinator.com", ""))
         self.assertEqual(_pane_command("web", "https://apnews.com", "AP"),
-                         ["omarchy", "launch", "webapp", "https://apnews.com"])
+                         ["systemd-run", "--user", "--collect", "--quiet", "--service-type=exec",
+                          "--", "omarchy", "launch", "webapp", "https://apnews.com"])
 
     def test_panes_never_launch_or_focus(self):
         # Composing means new windows. launch-or-focus would steal a window
