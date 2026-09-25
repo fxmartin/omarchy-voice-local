@@ -180,5 +180,67 @@ class MemoryTests(unittest.TestCase):
         write.assert_not_called()
 
 
+class LoopEdgeTests(unittest.TestCase):
+    def test_usage_is_reported_as_tokens(self):
+        reply = say("hi")
+        reply["usage"] = {"prompt_tokens": 7, "completion_tokens": 3}
+        with FakeEndpoint([reply]) as ep:
+            turn = make(ep, key_required=False).think("x")
+        self.assertEqual(turn.tokens, {"in": 7, "out": 3})
+
+    def test_unparseable_tool_arguments_are_reported_to_the_model(self):
+        bad = {"choices": [{"message": {"content": "", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "close", "arguments": "{not json"}}]}}]}
+        with FakeEndpoint([bad, say("sorry")]) as ep:
+            turn = make(ep, key_required=False).think("x")
+        tool_msg = ep.requests[1]["body"]["messages"][-1]
+        self.assertEqual(tool_msg["role"], "tool")
+        self.assertIn("could not parse arguments", tool_msg["content"])
+        self.assertEqual(turn.actions, [])
+
+    def test_pending_confirmation_returns_and_is_remembered(self):
+        executor = FakeExecutor()
+        executor.pending = object()
+        with FakeEndpoint([tool_call("close", {"target": "x"})]) as ep:
+            p = planner.Planner(config.Config(), executor, base_url=ep.base_url,
+                                key_required=False, history_turns=2)
+            turn = p.think("close x")
+        self.assertEqual(turn.reply, "That needs confirmation.")
+        self.assertEqual(len(ep.requests), 1)
+        self.assertEqual(p._history[0][-1],
+                         {"role": "assistant", "content": "That needs confirmation."})
+
+    def test_step_budget_exhaustion_replies_and_remembers(self):
+        cfg = config.Config(max_turns=2)
+        calls = [tool_call("close", {"target": "x"}) for _ in range(2)]
+        with FakeEndpoint(calls) as ep:
+            p = planner.Planner(cfg, FakeExecutor(), base_url=ep.base_url,
+                                key_required=False, history_turns=2)
+            turn = p.think("loop")
+        self.assertEqual(turn.reply, "Ran out of steps on that one.")
+        self.assertEqual(len(p._history), 1)
+
+
+class HttpErrorTests(unittest.TestCase):
+    def test_http_error_becomes_unavailable(self):
+        import io
+        import urllib.error
+        err = urllib.error.HTTPError("u", 500, "boom", {}, io.BytesIO(b"bad gateway"))
+        with mock.patch.object(planner.urllib.request, "urlopen", side_effect=err):
+            with self.assertRaises(planner.PlannerUnavailable) as ctx:
+                planner._chat([], [], config.Config(), "")
+        self.assertIn("planner HTTP 500: bad gateway", str(ctx.exception))
+
+    def test_unreachable_endpoint_becomes_unavailable(self):
+        import urllib.error
+        err = urllib.error.URLError("refused")
+        with mock.patch.object(planner.urllib.request, "urlopen", side_effect=err):
+            turn = planner.Planner(config.Config(), FakeExecutor(),
+                                   key_required=False).think("x")
+        self.assertIn("could not reach the planner: refused", turn.error)
+        self.assertEqual(turn.reply, "My planner isn't configured yet.")
+
+
 if __name__ == "__main__":
     unittest.main()
