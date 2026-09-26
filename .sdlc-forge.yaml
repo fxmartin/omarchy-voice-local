@@ -1,0 +1,5 @@
+# Declares the code host for the sdlc controller (Story 30.1-001 in
+# claude-code-config): origin is the local-ci-cd GitLab on home-lab, whose
+# hostname carries no "gitlab" tell for auto-detection to key on.
+forge: gitlab
+gitlab_url: http://home-lab.tailac3c7a.ts.net:8080
